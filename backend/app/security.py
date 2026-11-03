@@ -116,6 +116,9 @@ POLICY = [
     # --- admin at both ends ---
     (r"^/api/reports", "admin", "admin", "reports"),
     (r"^/api/payments", "admin", "admin", "payments"),
+    # The books. Company-wide like supplier payments (one bank account pays
+    # every warehouse's bills), and admin at both ends: it is all money.
+    (r"^/api/finance", "admin", "admin", "finance"),
     (r"^/api/returns", "admin", "admin", "returns"),
     (r"^/api/dead-stock", "admin", "admin", "deadstock"),
 

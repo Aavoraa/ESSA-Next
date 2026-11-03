@@ -2418,3 +2418,143 @@ class AuditEvent(Base):
     summary = Column(String)
     #: The document number the sentence is about, so it can be traced.
     ref = Column(String, index=True)
+
+
+# ============================================================================
+#  Finance — the books
+#  --------------------------------------------------------------------------
+#  Double entry, and nothing cleverer. Every rupee is a Voucher with two or
+#  more VoucherLines whose debits equal their credits; every report — the
+#  daybook, the trial balance, P&L, the balance sheet, the BRS book — is a sum
+#  over those lines. There is no second store of balances to drift out of step.
+#
+#  What the warehouse already records (a posted GRN, a supplier payment, a
+#  debit note) is not keyed in twice: services/finance.sync_books writes the
+#  voucher for it, idempotently, keyed on (source, source_id). Everything that
+#  happens only in the office — rent, salaries, a transporter paid, a loan
+#  instalment — is keyed in on Voucher Entry or one of the payment screens.
+# ============================================================================
+class Ledger(Base):
+    """An account. `group` is one of services/finance.GROUPS — Capital, Bank
+    Account, Sundry Creditors… — and it alone decides where the ledger lands in
+    the trial balance, P&L and balance sheet."""
+    __tablename__ = "ledgers"
+    id = Column(Integer, primary_key=True)
+    name = Column(String, nullable=False, index=True)
+    alias = Column(String)
+    group = Column(String, nullable=False, index=True)
+    business_id = Column(Integer, ForeignKey("businesses.id"), index=True)
+    #: The warehouse / store it belongs to, when it belongs to one (a petty-cash
+    #: drawer does; a supplier does not).
+    location = Column(String)
+    gstin = Column(String)
+    pan = Column(String)
+    state = Column(String)
+    address = Column(Text)
+    phone = Column(String)
+    email = Column(String)
+    bank_account = Column(String)
+    ifsc = Column(String)
+    #: Bill-by-bill: each invoice is settled against by reference, not just the
+    #: running balance.
+    billwise = Column(Boolean, default=False)
+    credit_days = Column(Integer)
+    tds_applicable = Column(Boolean, default=False)
+    tds_section = Column(String)
+    tds_rate = Column(Float)
+    #: Flags the Manage Ledger filter reads: managable_asset, inventory_bank,
+    #: pl_expense, daily/weekly/monthly/yearly_expense, asset_depreciation.
+    tags = Column(JSON, default=list)
+    opening_balance = Column(Float, default=0.0)   # signed: + debit, - credit
+    #: The master this ledger mirrors, when it mirrors one — a supplier's
+    #: payable account is created from the supplier and keyed back to it.
+    source = Column(String, index=True)            # supplier | agent | transport
+    source_id = Column(Integer, index=True)
+    active = Column(Boolean, default=True, index=True)
+    created_at = Column(DateTime, default=now)
+
+
+class Voucher(Base):
+    """One entry in the books. `vtype` is Payment, Receipt, Contra, Journal,
+    Sales, Purchase, Credit Note, Debit Note or Petty Cash."""
+    __tablename__ = "vouchers"
+    id = Column(Integer, primary_key=True)
+    voucher_no = Column(String, index=True)
+    vtype = Column(String, nullable=False, index=True)
+    date = Column(String, nullable=False, index=True)   # ISO YYYY-MM-DD
+    business_id = Column(Integer, ForeignKey("businesses.id"), index=True)
+    location = Column(String, index=True)
+    #: Cash | Bank | Cheque | NEFT | RTGS | UPI — how the money moved, if it did.
+    mode = Column(String)
+    ref_no = Column(String)
+    cheque_no = Column(String, index=True)
+    cheque_date = Column(String)
+    narration = Column(Text)
+    #: Where it came from: manual, or the warehouse record it mirrors
+    #: (purchase, payment, return) or the screen that raised it
+    #: (transport_payment, agent_payment, collection, credit_note, petty_cash).
+    source = Column(String, default="manual", index=True)
+    source_id = Column(Integer, index=True)
+    party_ledger_id = Column(Integer, ForeignKey("ledgers.id"), index=True)
+    amount = Column(Float, default=0.0)           # the voucher's total, for lists
+    tds_amount = Column(Float, default=0.0)
+    status = Column(String, default="posted", index=True)   # posted | cancelled
+    #: When it was last sent to Tally, and what Tally said.
+    tally_synced_at = Column(DateTime)
+    tally_status = Column(String)
+    created_by = Column(String)
+    created_at = Column(DateTime, default=now)
+    modified_at = Column(DateTime, default=now, onupdate=now)
+
+    party = relationship("Ledger", foreign_keys=[party_ledger_id])
+    lines = relationship("VoucherLine", back_populates="voucher",
+                         cascade="all, delete-orphan", order_by="VoucherLine.id")
+
+
+class VoucherLine(Base):
+    __tablename__ = "voucher_lines"
+    id = Column(Integer, primary_key=True)
+    voucher_id = Column(Integer, ForeignKey("vouchers.id"), index=True, nullable=False)
+    ledger_id = Column(Integer, ForeignKey("ledgers.id"), index=True, nullable=False)
+    debit = Column(Float, default=0.0)
+    credit = Column(Float, default=0.0)
+    narration = Column(String)
+    #: The bill this line settles or raises — "PUR:12", "LR:40", "SAL:INV-9" —
+    #: which is how a bill-wise ledger knows what is still pending.
+    bill_ref = Column(String, index=True)
+    #: The day the bank statement shows it (BRS Book). Blank = not yet cleared.
+    cleared_on = Column(String)
+
+    voucher = relationship("Voucher", back_populates="lines")
+    ledger = relationship("Ledger")
+
+
+class ChequeBook(Base):
+    """A cheque book issued on one bank ledger. Its leaves are used by the
+    vouchers that quote their numbers; a spoiled leaf is recorded here."""
+    __tablename__ = "cheque_books"
+    id = Column(Integer, primary_key=True)
+    bank_ledger_id = Column(Integer, ForeignKey("ledgers.id"), index=True)
+    book_no = Column(String)
+    from_no = Column(Integer)
+    to_no = Column(Integer)
+    issued_on = Column(String)
+    cancelled = Column(JSON, default=list)        # [{"no": 123456, "reason": "spoiled"}]
+    remarks = Column(String)
+    created_at = Column(DateTime, default=now)
+
+    bank = relationship("Ledger")
+
+
+class TallyConfig(Base):
+    """Where one company's Tally runs, and which Tally ledger each kind of
+    voucher should land on."""
+    __tablename__ = "tally_configs"
+    id = Column(Integer, primary_key=True)
+    business_id = Column(Integer, ForeignKey("businesses.id"), unique=True, index=True)
+    tally_company = Column(String)
+    host = Column(String)
+    port = Column(Integer, default=9000)
+    #: {"purchase": {...}, "sales": {...}, "voucher_types": {...}, "payment_modes": {...}}
+    mapping = Column(JSON, default=dict)
+    updated_at = Column(DateTime, default=now, onupdate=now)

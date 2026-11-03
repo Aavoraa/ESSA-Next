@@ -1,6 +1,7 @@
 import React, { useEffect, useLayoutEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { api, session, warehouse, setUnauthorizedHandler, swr, readCache } from './api.js'
 import { parseDictation, coerceSpoken, dictationTargets } from './voicefill.js'
+import Finance, { FIN_SCREENS } from './Finance.jsx'
 
 // ---------- helpers ----------
 const num = (v) => (v === '' || v == null ? null : isNaN(+v) ? v : +v)
@@ -16792,7 +16793,11 @@ const IN_STOCK_AUDIT = { physical_audit: 'qty' }
 
 //: The whole company-level menu. Anything not here needs a warehouse first.
 const COMPANY_LEVEL = new Set(['command', 'audit', 'central', 'locator', 'reports',
-                               'locations', 'users'])
+                               'locations', 'users',
+                               // the books are company-wide, and so are supplier
+                               // payments (services/scope.py): one bank account
+                               // pays every warehouse's bills
+                               'payments', ...FIN_SCREENS.map(([k]) => k)])
 
 //: Four ranked roles — services/users.py holds the same four, and everything is
 //: compared by RANK so the top one inherits every screen below it.
@@ -16857,7 +16862,10 @@ const MODULES = [
   { key: 'outward', icon: '📤', label: 'Stock Outward', blurb: 'Dispatch stock to a shop or another godown' },
   { key: 'inward', icon: '📥', label: 'Stock Inward', blurb: 'Accept a dispatched transfer, line by line' },
   { key: 'returns', icon: '↩', label: 'Returns', blurb: 'Debit notes raised against a posted GRN', min: 'admin' },
-  { key: 'payments', icon: '₹', label: 'Payments', blurb: 'Settle supplier bills and read the ledger', min: 'admin' },
+  { key: 'payments', icon: '₹', label: 'Supplier Payment', blurb: 'Settle supplier bills and read the ledger', min: 'admin' },
+  // The books (Finance.jsx). One grant covers them all — `perm` names it — because
+  // they are one set of books: a statement is only as right as the vouchers.
+  ...FIN_SCREENS.map(([key, label, blurb]) => ({ key, icon: '₹', label, blurb, min: 'admin', perm: 'finance' })),
   { key: 'reports', icon: '📊', label: 'Reports', blurb: 'Every register, filtered and exportable', min: 'admin' },
   { key: 'suppliers', icon: '🏭', label: 'Suppliers', blurb: 'Supplier master and trained invoice formats', min: 'admin' },
   { key: 'masters', icon: '⚙', label: 'Masters', blurb: 'Categories, agents, transporters and the dropdown lists', min: 'admin' },
@@ -17073,6 +17081,7 @@ const NAV_ICON = {
   'pos:returns': 'undo', 'pos:alterations': 'scissors', 'pos:stores': 'layers',
   'pos:promotions': 'percent', 'pos:staff': 'users', 'pos:reports': 'spreadsheet',
   'ws:central': 'grid', 'ws:warehouse': 'building', 'ws:store': 'store',
+  ...Object.fromEntries(FIN_SCREENS.map(([k, , , icon]) => [k, icon])),
 }
 
 // Two letters for the avatar: the initials of a two-word name, or the first two
@@ -17204,6 +17213,7 @@ const NAV_RAIL = {
   central: [
     { key: 'home', label: 'Home', icon: 'dashboard', screens: ['command', 'central', 'pickwh'] },
     { key: 'stock', label: 'Stock', icon: 'boxes', screens: ['locator'] },
+    { key: 'finance', label: 'Finance', icon: 'rupee', screens: ['payments', ...FIN_SCREENS.map(([k]) => k)] },
     { key: 'reports', label: 'Reports', icon: 'trending', screens: ['reports', 'audit'] },
     { key: 'setup', label: 'Setup', icon: 'sliders', screens: ['locations', 'users'] },
   ],
@@ -17215,6 +17225,9 @@ const NAV_RAIL = {
       screens: ['inventory', 'locator', 'stock_audit', 'physical_audit', 'pricing', 'deadstock'] },
     { key: 'transfers', label: 'Transfers', icon: 'truck', screens: ['outward', 'inward'] },
     { key: 'labels', label: 'Labels', icon: 'qr', screens: ['labels', 'labelprint'] },
+    // Supplier Payment leads it, as in the reference menu; it is also under
+    // Purchase, where the bills it settles are raised.
+    { key: 'finance', label: 'Finance', icon: 'rupee', screens: ['payments', ...FIN_SCREENS.map(([k]) => k)] },
     { key: 'reports', label: 'Reports', icon: 'trending', screens: ['reports', 'audit'] },
     { key: 'setup', label: 'Setup', icon: 'sliders', screens: ['masters', 'catalogues', 'locations', 'users'] },
   ],
@@ -18853,7 +18866,7 @@ export default function App() {
   // it is that nobody is shown twelve buttons that answer "not for you".
   const granted = perms?.screens || null
   const modules = MODULES.filter((m) => (!m.min || atLeast(role, m.min))
-    && (!granted || (granted[m.key] || []).length)
+    && (!granted || (granted[m.perm || m.key] || []).length)
     // Company-level screens are hidden once you are standing inside a warehouse.
     // Neither has an answer at that altitude: the Central Dashboard compares
     // every warehouse, and Locations is where warehouses are created and closed.
@@ -19357,6 +19370,8 @@ export default function App() {
         <Returns toast={toast} />
       ) : k === 'payments' ? (
         <Payments toast={toast} />
+      ) : String(k).startsWith('fin_') ? (
+        <Finance key={k} screen={k} toast={toast} />
       ) : k === 'reports' ? (
         <Reports />
       ) : k === 'masters' ? (
@@ -19391,3 +19406,7 @@ export default function App() {
     )
   }
 }
+
+// The building blocks Finance.jsx draws its screens from, so the books look and
+// behave like every other module rather than like a second app bolted on.
+export { Section, Stat, DateField, SearchBox, money, fmtDate, Icon }
