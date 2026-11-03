@@ -171,12 +171,62 @@ class Customer(db.Model):
     anniversary = db.Column(db.Date)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+    # ---- the CRM's customer master (see app/crm.py) ----
+    # Every one of these postdates the original table, so dbpatch adds them to
+    # an existing shop and a row from before has them all blank. The three flags
+    # are worded so that blank means the ordinary case — active, earning points,
+    # approved — rather than relying on a column default an old row never got.
+    customer_type = db.Column(db.String(16))         # customer · wholesale · corporate · staff
+    category = db.Column(db.String(64), index=True)
+    code = db.Column(db.String(32), index=True)
+    alt_phone = db.Column(db.String(32))
+    billing_name = db.Column(db.String(128))
+    gender = db.Column(db.String(8))
+    married = db.Column(db.Boolean)
+    kids_boys = db.Column(db.Integer)
+    kids_girls = db.Column(db.Integer)
+    loyalty_card = db.Column(db.String(32), index=True)
+    supply_type = db.Column(db.String(8))            # B2C · B2B · SEZ · EXPORT
+    tan = db.Column(db.String(16))
+    pan = db.Column(db.String(16))
+    credit_allowed = db.Column(db.Boolean)
+    credit_days = db.Column(db.Integer)
+    credit_limit = db.Column(db.Float)
+    city = db.Column(db.String(64), index=True)
+    district = db.Column(db.String(64))
+    area = db.Column(db.String(64), index=True)
+    pincode = db.Column(db.String(12))
+    state = db.Column(db.String(64))
+    country = db.Column(db.String(64))
+    religion = db.Column(db.String(32))
+    customer_group = db.Column(db.String(64))
+    bank_account_name = db.Column(db.String(128))
+    bank_account_no = db.Column(db.String(32))
+    bank_ifsc = db.Column(db.String(16))
+    #: The branch the customer signed up at.
+    registered_location_id = db.Column(db.Integer, db.ForeignKey("locations.id"), index=True)
+    #: counter · self · lead · import
+    source = db.Column(db.String(16))
+    #: Signed themselves up from the QR and not yet looked at by the shop.
+    awaiting_approval = db.Column(db.Boolean, index=True)
+    loyalty_disabled = db.Column(db.Boolean)
+    inactive = db.Column(db.Boolean)
+    #: The price list this customer buys on — see PriceCategory.
+    price_category_id = db.Column(db.Integer, db.ForeignKey("price_categories.id"), index=True)
+
     invoices = db.relationship("Invoice", backref="customer", lazy=True)
+    registered_location = db.relationship("Location")
+    price_category = db.relationship("PriceCategory")
 
     @property
     def card_code(self):
         """Stable membership-card / barcode value for this customer."""
         return f"CUST{self.id:06d}"
+
+    @property
+    def card_no(self):
+        """The loyalty card number the customer carries — their own, or the default."""
+        return self.loyalty_card or self.card_code
 
 
 class LoyaltyTxn(db.Model):
@@ -631,10 +681,11 @@ PAYMENT_METHODS = ("cash", "card", "upi")
 #: Money the customer already paid the shop, spent against a bill. Each needs the
 #: document it draws on as its `reference` — a credit note kept as store credit,
 #: or an advance — and is checked against that document's balance at the till.
-VOUCHER_METHODS = ("credit_note", "advance")
+VOUCHER_METHODS = ("credit_note", "advance", "gift_voucher")
 
 TENDER_LABELS = {"cash": "Cash", "card": "Card", "upi": "UPI",
-                 "credit_note": "Credit note", "advance": "Advance"}
+                 "credit_note": "Credit note", "advance": "Advance",
+                 "gift_voucher": "Gift voucher"}
 
 
 class InvoiceItem(db.Model):
@@ -1680,6 +1731,8 @@ class CustomerAdvance(db.Model):
     refund_method = db.Column(db.String(16))
     refunded_at = db.Column(db.DateTime)
     refunded_by_id = db.Column(db.Integer, db.ForeignKey("users.id"))
+    #: The customer order this was paid against, if any — see CustomerOrder.
+    order_id = db.Column(db.Integer, db.ForeignKey("customer_orders.id"), index=True)
 
     customer = db.relationship("Customer", backref=db.backref("advances", lazy=True))
     cashier = db.relationship("User", foreign_keys=[cashier_id])
@@ -1734,6 +1787,9 @@ class Coupon(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     code = db.Column(db.String(32), unique=True, nullable=False, index=True)
     campaign_id = db.Column(db.Integer, db.ForeignKey("coupon_campaigns.id"), nullable=False, index=True)
+    #: Its own rupee value, over the campaign's — a coupon bought with loyalty
+    #: points is worth what the points were. Null = the campaign's value.
+    value = db.Column(db.Float)
     #: Tied to one customer, or null for a code anyone may present.
     customer_id = db.Column(db.Integer, db.ForeignKey("customers.id"), index=True)
     valid_from = db.Column(db.Date)
@@ -2067,3 +2123,304 @@ class SalesSchemeUse(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     scheme = db.relationship("SalesScheme")
     coupon = db.relationship("Coupon")
+
+
+# ==========================================================================
+#  CRM — orders, gift vouchers, price lists, feedback, walk-ins, leads
+#  (screens in app/routes/crm*.py; the shared logic in app/crm.py)
+# ==========================================================================
+ORDER_STATUSES = ("new", "confirmed", "in_progress", "ready", "delivered", "cancelled")
+
+
+class CustomerOrder(db.Model):
+    """Something a customer has asked for that the shop does not hand over today —
+    a stitched blouse, a saree to be sourced, a bulk order for a wedding.
+
+    Money paid against it is a CustomerAdvance carrying `order_id`, so it is the
+    customer's to spend at the till when the goods are billed, exactly like any
+    other advance. What the order says was paid is worked out from those, never
+    stored.
+    """
+    __tablename__ = "customer_orders"
+    id = db.Column(db.Integer, primary_key=True)
+    number = db.Column(db.String(32), unique=True, nullable=False, index=True)
+    customer_id = db.Column(db.Integer, db.ForeignKey("customers.id"), nullable=False, index=True)
+    order_date = db.Column(db.Date, default=date.today, index=True)
+    delivery_date = db.Column(db.Date, index=True)
+    contact_no = db.Column(db.String(32))
+    city = db.Column(db.String(64))
+    category = db.Column(db.String(64))
+    #: The staff member who took the order.
+    received_by_id = db.Column(db.Integer, db.ForeignKey("users.id"))
+    status = db.Column(db.String(16), default="new", index=True)
+    notes = db.Column(db.String(512))
+    location_id = db.Column(db.Integer, db.ForeignKey("locations.id"), index=True)
+    #: The bill it was finally billed on.
+    invoice_id = db.Column(db.Integer, db.ForeignKey("invoices.id"))
+    created_by_id = db.Column(db.Integer, db.ForeignKey("users.id"))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    customer = db.relationship("Customer")
+    received_by = db.relationship("User", foreign_keys=[received_by_id])
+    location = db.relationship("Location")
+    invoice = db.relationship("Invoice")
+    lines = db.relationship("CustomerOrderLine", backref="order", lazy=True,
+                            cascade="all, delete-orphan", order_by="CustomerOrderLine.id")
+    advances = db.relationship("CustomerAdvance", lazy=True, viewonly=True,
+                               primaryjoin="CustomerAdvance.order_id == CustomerOrder.id",
+                               foreign_keys="CustomerAdvance.order_id")
+
+    @property
+    def total_qty(self):
+        return round(sum(l.qty or 0 for l in self.lines), 2)
+
+    @property
+    def total_amount(self):
+        return round(sum(l.amount for l in self.lines), 2)
+
+    @property
+    def paid_amount(self):
+        return round(sum((a.amount or 0) - (a.refunded or 0) for a in self.advances), 2)
+
+    @property
+    def balance(self):
+        return round(max(0.0, self.total_amount - self.paid_amount), 2)
+
+
+class CustomerOrderLine(db.Model):
+    __tablename__ = "customer_order_lines"
+    id = db.Column(db.Integer, primary_key=True)
+    order_id = db.Column(db.Integer, db.ForeignKey("customer_orders.id"), nullable=False, index=True)
+    description = db.Column(db.String(256), nullable=False)
+    design_no = db.Column(db.String(64))
+    size = db.Column(db.String(32))
+    color = db.Column(db.String(32))
+    qty = db.Column(db.Float, default=1.0)
+    rate = db.Column(db.Float, default=0.0)
+
+    @property
+    def amount(self):
+        return round((self.qty or 0) * (self.rate or 0), 2)
+
+
+# ---------- Gift vouchers ----------
+GIFT_VOUCHER_MODES = ("direct", "complimentary")
+#: The face values the issue screen offers, largest first.
+GIFT_VOUCHER_DENOMINATIONS = (25000, 15000, 10000, 5000, 2000, 1000, 500, 200, 100, 50)
+GIFT_VOUCHER_PAY_METHODS = ("cash", "card", "upi", "bank")
+
+
+class GiftVoucherBatch(db.Model):
+    """One sale of gift vouchers — the money taken, and the vouchers it bought.
+
+    A customer buying ₹5,000 of gifts as five ₹1,000 vouchers is one payment and
+    five codes, so the payment lives here and each code is a GiftVoucher.
+    `complimentary` vouchers are given away, not sold: no money, no drawer.
+    """
+    __tablename__ = "gift_voucher_batches"
+    id = db.Column(db.Integer, primary_key=True)
+    number = db.Column(db.String(32), unique=True, nullable=False, index=True)
+    mode = db.Column(db.String(16), default="direct")
+    customer_id = db.Column(db.Integer, db.ForeignKey("customers.id"), index=True)
+    issued_on = db.Column(db.Date, default=date.today, index=True)
+    valid_from = db.Column(db.Date)
+    valid_to = db.Column(db.Date)
+    #: How it was paid for — cash · card · upi · bank (a cheque or transfer).
+    method = db.Column(db.String(16))
+    amount = db.Column(db.Float, default=0.0)
+    bank = db.Column(db.String(64))
+    reference = db.Column(db.String(64))
+    remarks = db.Column(db.String(256))
+    issued_by_id = db.Column(db.Integer, db.ForeignKey("users.id"))
+    #: Who the vouchers were handed to, as written.
+    received_by = db.Column(db.String(128))
+    company_id = db.Column(db.Integer, db.ForeignKey("companies.id"), index=True)
+    location_id = db.Column(db.Integer, db.ForeignKey("locations.id"), index=True)
+    counter_id = db.Column(db.Integer, db.ForeignKey("counters.id"), index=True)
+    created_by_id = db.Column(db.Integer, db.ForeignKey("users.id"))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+
+    customer = db.relationship("Customer")
+    issued_by = db.relationship("User", foreign_keys=[issued_by_id])
+    company = db.relationship("Company")
+    location = db.relationship("Location")
+    vouchers = db.relationship("GiftVoucher", backref="batch", lazy=True, order_by="GiftVoucher.id")
+
+    @property
+    def face_value(self):
+        return round(sum(v.value or 0 for v in self.vouchers), 2)
+
+
+class GiftVoucher(db.Model):
+    """One voucher — a code worth money at the till, spent as a tender.
+
+    What is left on it is the value less the payments naming it on bills that
+    still stand (app/vouchers.gift_voucher_balance), so a cancelled bill gives
+    the money back by itself.
+    """
+    __tablename__ = "gift_vouchers"
+    id = db.Column(db.Integer, primary_key=True)
+    code = db.Column(db.String(32), unique=True, nullable=False, index=True)
+    batch_id = db.Column(db.Integer, db.ForeignKey("gift_voucher_batches.id"), nullable=False, index=True)
+    value = db.Column(db.Float, nullable=False)
+    #: Who it is for, when the buyer says.
+    given_to = db.Column(db.String(128))
+    given_to_phone = db.Column(db.String(32))
+    active = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+# ---------- Price lists ----------
+class PriceCategory(db.Model):
+    """A price list a customer can be put on — "Wholesale", "10% DIS", "Staff".
+
+    A design priced on the list sells at that price; anything else sells at the
+    list's discount off its own price (0 = the ordinary price).
+    """
+    __tablename__ = "price_categories"
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(64), unique=True, nullable=False)
+    discount_pct = db.Column(db.Float, default=0.0)
+    active = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    prices = db.relationship("PriceListItem", backref="category", lazy=True,
+                             cascade="all, delete-orphan")
+
+
+class PriceListItem(db.Model):
+    __tablename__ = "price_list_items"
+    __table_args__ = (db.UniqueConstraint("category_id", "design_no"),)
+    id = db.Column(db.Integer, primary_key=True)
+    category_id = db.Column(db.Integer, db.ForeignKey("price_categories.id"), nullable=False, index=True)
+    design_no = db.Column(db.String(64), nullable=False, index=True)
+    price = db.Column(db.Float, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# ---------- Feedback questions and answers ----------
+FEEDBACK_KINDS = ("rating", "yesno", "choice", "text")
+
+
+class FeedbackQuestion(db.Model):
+    """One question on the customer's feedback form. Retired, never deleted, once
+    anyone has answered it — the answers would lose what they were answers to."""
+    __tablename__ = "feedback_questions"
+    id = db.Column(db.Integer, primary_key=True)
+    text = db.Column(db.String(256), nullable=False)
+    kind = db.Column(db.String(8), default="rating")
+    #: For a choice question: the options, one per line.
+    options = db.Column(db.Text)
+    required = db.Column(db.Boolean, default=False)
+    active = db.Column(db.Boolean, default=True)
+    sort_order = db.Column(db.Integer, default=0)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    @property
+    def option_list(self):
+        return [o.strip() for o in (self.options or "").splitlines() if o.strip()]
+
+
+class FeedbackAnswer(db.Model):
+    __tablename__ = "feedback_answers"
+    id = db.Column(db.Integer, primary_key=True)
+    feedback_id = db.Column(db.Integer, db.ForeignKey("customer_feedback.id"), nullable=False, index=True)
+    question_id = db.Column(db.Integer, db.ForeignKey("feedback_questions.id"), nullable=False, index=True)
+    value = db.Column(db.String(512))
+    #: 1–5 for a rating, 1/0 for yes/no — what an average is taken over.
+    score = db.Column(db.Float)
+
+    feedback = db.relationship("CustomerFeedback", backref=db.backref("answers", lazy=True))
+    question = db.relationship("FeedbackQuestion")
+
+
+class CrmSetting(db.Model):
+    """A small settings store for the CRM's forms — one JSON value per key."""
+    __tablename__ = "crm_settings"
+    key = db.Column(db.String(64), primary_key=True)
+    value = db.Column(db.Text)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# ---------- Customer divert (walk-in routing) ----------
+VISIT_STATUSES = ("waiting", "attending", "billed", "left")
+
+
+class CustomerVisit(db.Model):
+    """A customer met at the door and sent to a floor and a salesperson.
+
+    Closed as billed (with the bill) or left, so the day shows how many walked in,
+    where they were sent, and how many of them bought.
+    """
+    __tablename__ = "customer_visits"
+    id = db.Column(db.Integer, primary_key=True)
+    customer_id = db.Column(db.Integer, db.ForeignKey("customers.id"), index=True)
+    name = db.Column(db.String(128))
+    phone = db.Column(db.String(32), index=True)
+    looking_for = db.Column(db.String(128))
+    party_size = db.Column(db.Integer, default=1)
+    floor_id = db.Column(db.Integer, db.ForeignKey("floors.id"), index=True)
+    staff_id = db.Column(db.Integer, db.ForeignKey("users.id"), index=True)
+    status = db.Column(db.String(16), default="waiting", index=True)
+    invoice_id = db.Column(db.Integer, db.ForeignKey("invoices.id"))
+    note = db.Column(db.String(256))
+    location_id = db.Column(db.Integer, db.ForeignKey("locations.id"), index=True)
+    diverted_by_id = db.Column(db.Integer, db.ForeignKey("users.id"))
+    #: Shop wall-clock time: "who is waiting today" is asked in local days.
+    created_at = db.Column(db.DateTime, default=datetime.now, index=True)
+    closed_at = db.Column(db.DateTime)
+
+    customer = db.relationship("Customer")
+    floor = db.relationship("Floor")
+    staff = db.relationship("User", foreign_keys=[staff_id])
+    diverted_by = db.relationship("User", foreign_keys=[diverted_by_id])
+    invoice = db.relationship("Invoice")
+
+
+# ---------- Leads ----------
+LEAD_STATUSES = ("new", "contacted", "interested", "won", "lost")
+LEAD_SOURCES = ("walk_in", "phone", "whatsapp", "instagram", "facebook", "referral",
+                "website", "event", "other")
+
+
+class Lead(db.Model):
+    """Somebody who might buy — an enquiry, a referral, a wedding party to call."""
+    __tablename__ = "leads"
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(128), nullable=False)
+    phone = db.Column(db.String(32), index=True)
+    email = db.Column(db.String(128))
+    city = db.Column(db.String(64))
+    source = db.Column(db.String(16), default="walk_in", index=True)
+    interest = db.Column(db.String(256))
+    expected_value = db.Column(db.Float)
+    status = db.Column(db.String(16), default="new", index=True)
+    next_follow_up = db.Column(db.Date, index=True)
+    assigned_to_id = db.Column(db.Integer, db.ForeignKey("users.id"), index=True)
+    #: The customer record it became.
+    customer_id = db.Column(db.Integer, db.ForeignKey("customers.id"), index=True)
+    lost_reason = db.Column(db.String(256))
+    location_id = db.Column(db.Integer, db.ForeignKey("locations.id"), index=True)
+    created_by_id = db.Column(db.Integer, db.ForeignKey("users.id"))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    assigned_to = db.relationship("User", foreign_keys=[assigned_to_id])
+    customer = db.relationship("Customer")
+    activities = db.relationship("LeadActivity", backref="lead", lazy=True,
+                                 cascade="all, delete-orphan",
+                                 order_by="LeadActivity.created_at.desc()")
+
+
+class LeadActivity(db.Model):
+    __tablename__ = "lead_activities"
+    id = db.Column(db.Integer, primary_key=True)
+    lead_id = db.Column(db.Integer, db.ForeignKey("leads.id"), nullable=False, index=True)
+    #: call · visit · message · note · status
+    kind = db.Column(db.String(16), default="note")
+    note = db.Column(db.String(512))
+    by_id = db.Column(db.Integer, db.ForeignKey("users.id"))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    by = db.relationship("User")

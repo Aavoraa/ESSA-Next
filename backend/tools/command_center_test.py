@@ -86,7 +86,10 @@ from app import db as shop_db                                       # noqa: E402
 from app.models import (Category as SCategory, Company as SCompany,  # noqa: E402
                         Counter, CreditNote, CreditNoteItem, Floor as SFloor,
                         Invoice, InvoiceItem, Location as SLocation,
-                        Product as SProduct, User as SUser)
+                        Product as SProduct, User as SUser,
+                        Customer as SCustomer, CustomerOrder, CustomerOrderLine,
+                        CustomerAdvance, CustomerFeedback, CustomerVisit, GiftVoucher,
+                        GiftVoucherBatch, InvoicePayment, Lead, LoyaltyTxn)
 
 shop_app = shop_pkg.create_app()
 used = shop_app.config["SQLALCHEMY_DATABASE_URI"].replace("\\", "/")
@@ -153,6 +156,38 @@ shop_db.session.add(CreditNoteItem(credit_note_id=note.id,
                                    invoice_item_id=inv_a.items[0].id, product_id=shirt.id,
                                    quantity=1, unit_price=1000.0, gst_rate=5.0,
                                    line_total=1000.0, tax_amount=50.0))
+# ---- the CRM: a customer, an open order, a voucher, feedback, a lead, a walk-in
+kumar = SCustomer(name="R Kumar", phone="9876500001", city="Tirupur", category="Regular",
+                  loyalty_points=120, total_spent=525.0, dob=TODAY.replace(year=1990),
+                  created_at=at(TODAY, 1))
+shop_db.session.add(kumar)
+shop_db.session.flush()
+inv_b.customer_id = kumar.id
+shop_db.session.add(LoyaltyTxn(customer_id=kumar.id, points=5.25, reason="earn", invoice_id=inv_b.id,
+                               created_at=at(TODAY, 3)))
+order = CustomerOrder(number="ORD-000001", customer_id=kumar.id, order_date=TODAY,
+                      delivery_date=TODAY, status="new", location_id=branch.id)
+shop_db.session.add(order)
+shop_db.session.flush()
+shop_db.session.add(CustomerOrderLine(order_id=order.id, description="Blouse stitching", qty=2, rate=450))
+shop_db.session.add(CustomerAdvance(number="ADV-000001", customer_id=kumar.id, amount=300, method="cash",
+                                    cashier_id=ravi.id, order_id=order.id, location_id=branch.id))
+gvb = GiftVoucherBatch(number="GVS-000001", mode="direct", customer_id=kumar.id, issued_on=TODAY,
+                       method="cash", amount=1500, location_id=branch.id)
+shop_db.session.add(gvb)
+shop_db.session.flush()
+shop_db.session.add_all([GiftVoucher(code="GV0A1B2C3D", batch_id=gvb.id, value=1000),
+                         GiftVoucher(code="GV0A1B2C3E", batch_id=gvb.id, value=500)])
+shop_db.session.add(InvoicePayment(invoice_id=inv_a.id, method="gift_voucher", amount=400,
+                                   reference="GV0A1B2C3D"))
+shop_db.session.add(CustomerFeedback(customer_id=kumar.id, invoice_id=inv_b.id, rating=2,
+                                     comments="Billing was slow", source="link", created_at=at(TODAY, 4)))
+shop_db.session.add(Lead(name="Divya Wedding", phone="9222222222", source="instagram", status="interested",
+                         expected_value=80000, next_follow_up=TODAY, location_id=branch.id))
+shop_db.session.add(CustomerVisit(name="R Kumar", customer_id=kumar.id, phone="9876500001",
+                                  floor_id=ground.id, status="billed", invoice_id=inv_b.id,
+                                  location_id=branch.id,
+                                  created_at=dt.datetime.combine(TODAY, dt.time(11, 0))))
 shop_db.session.commit()
 shirt_shop_id = shirt.id
 print("  ok    the till has %d bills and one credit note" % Invoice.query.count())
@@ -489,6 +524,54 @@ has("answered", a["line"], "3 warehouses, 1 store and 2 POS counters")
 a = ask("what is the weather in chennai")
 eq("an unanswerable question is not forced into a report", a["ok"], False)
 eq("…and it offers examples instead", len(a["suggestions"]) > 0, True)
+
+head("…and the CRM — customers, orders, vouchers, loyalty, feedback, leads, walk-ins")
+a = ask("Details of 9876500001")
+eq("a mobile number is a customer, not a tag", a["intent"], "customer")
+has("their profile", a["line"], "R Kumar")
+has("with their points", a["line"], "120 loyalty points")
+a = ask("How many points does R Kumar have?")
+eq("a customer's points by name", a["intent"], "customer")
+has("answered", a["headline"], "120")
+a = ask("R Kumar")
+eq("a question that is only a name finds the customer", a["intent"], "customer")
+a = ask("How many new customers this month?")
+eq("routed to customers", a["intent"], "customers")
+has("answered", a["line"], "1 new customer")
+a = ask("Who are my top customers this month?")
+has("ranked by spend", a["line"], "R Kumar leads")
+a = ask("Pending customer orders")
+eq("routed to customer orders", a["intent"], "customer_orders")
+has("open, and what is left to collect", a["line"], "1 order open worth ₹900")
+has("…due today", a["line"], "1 order due or overdue")
+a = ask("ORD-000001")
+has("an order number is answered", a["line"], "Order ORD-000001 for R Kumar")
+a = ask("Gift vouchers sold this month")
+eq("routed to gift vouchers", a["intent"], "gift_vouchers")
+has("sold", a["line"], "2 vouchers sold worth ₹1,500")
+has("still unspent", a["line"], "₹1,100 is still unspent")
+a = ask("GV0A1B2C3D")
+has("a voucher code is answered", a["line"], "₹400 spent")
+a = ask("Customer feedback today")
+eq("routed to feedback", a["intent"], "feedback")
+has("averaged", a["line"], "averaging 2.0 stars")
+has("unhappy to call back", a["line"], "1 unhappy")
+a = ask("Leads to follow up today")
+eq("routed to leads", a["intent"], "leads")
+has("due today", a["line"], "1 to follow up today")
+a = ask("Today's walk-ins")
+eq("routed to walk-ins", a["intent"], "walkins")
+has("conversion", a["line"], "1 customer walked in, 1 bought")
+a = ask("Birthdays this week")
+eq("routed to birthdays", a["intent"], "birthdays")
+has("Kumar's birthday is today", a["line"], "1 customer")
+a = ask("Loyalty points earned today")
+eq("routed to loyalty", a["intent"], "loyalty")
+has("earned", a["line"], "5.25 points earned")
+a = ask("Show pending supplier payments")
+eq("a supplier question still goes to the supplier answer", a["intent"], "pending_payments")
+a = ask("Today's total sales")
+eq("…and sales are still sales", a["intent"], "sales")
 
 head("…and the same questions inside one warehouse's allotment")
 a = ask("Today's total sales", head_k)

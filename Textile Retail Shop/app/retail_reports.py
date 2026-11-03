@@ -32,8 +32,9 @@ from app.datefilter import day_from, day_to
 from app import warehouse_items as wi
 from app.models import (Attendance, Category, Company, Counter, Coupon,
                         CouponRedemption, CreditNote, CreditNoteItem, Customer, CustomerAdvance,
-                        CustomerFeedback, Delivery, DrawerSession, Invoice,
-                        InvoiceItem, InvoicePayment, Location, LocationStock,
+                        CustomerFeedback, CustomerOrder, CustomerVisit, Delivery, DrawerSession,
+                        FeedbackAnswer, FeedbackQuestion, GiftVoucher, GiftVoucherBatch, Invoice,
+                        InvoiceItem, InvoicePayment, Lead, Location, LocationStock,
                         LoyaltyTxn, Product, PromotionApplication, PromotionScheme,
                         SaleSession, ScheduledMessage, StaffAdvance, StockMovement,
                         TransferReceipt, User)
@@ -1322,7 +1323,7 @@ def cn_customer(ctx):
                     "Reason", "Amount"], rows,
                    {"Notes": len(rows), "Amount": _sum(rows, 7)},
                    "Credit notes raised to customers, refunded as money or kept as store "
-                   "credit. The shop issues no gift vouchers, so this lists credit notes only.")
+                   "credit. Gift vouchers sold are in CRM Reports → Gift Voucher Sales.")
 
 
 def loyalty_consumption(ctx):
@@ -1603,26 +1604,37 @@ def coupon_consumption(ctx):
 def gv_cn_consumption(ctx):
     q = (db.session.query(InvoicePayment, Invoice)
          .join(Invoice, Invoice.id == InvoicePayment.invoice_id)
-         .filter(InvoicePayment.method == "credit_note", Invoice.live(),
+         .filter(InvoicePayment.method.in_(("credit_note", "gift_voucher")), Invoice.live(),
                  day_from(Invoice.invoice_date, ctx.start),
                  day_to(Invoice.invoice_date, ctx.end)))
     pairs = ctx._place(q, Invoice).order_by(Invoice.invoice_date, InvoicePayment.id).all()
     numbers = {p.reference for p, _ in pairs if p.reference}
     notes = ({n.number: n for n in CreditNote.query.filter(CreditNote.number.in_(numbers)).all()}
              if numbers else {})
+    gvs = ({v.code: v for v in GiftVoucher.query.filter(GiftVoucher.code.in_(numbers)).all()}
+           if numbers else {})
     rows = []
     for pay, inv in pairs:
+        cust = inv.customer.name if inv.customer else "Walk-in"
+        if pay.method == "gift_voucher":
+            v = gvs.get(pay.reference)
+            rows.append([inv.invoice_number, _dt(inv.invoice_date), cust, "Gift voucher",
+                         pay.reference or "—", _d(v.batch.issued_on) if v else "—",
+                         v.batch.number if v else "—", _m(v.value) if v else 0.0, _m(pay.amount),
+                         vouchers.gift_voucher_balance(v) if v else 0.0])
+            continue
         n = notes.get(pay.reference)
-        rows.append([inv.invoice_number, _dt(inv.invoice_date),
-                     inv.customer.name if inv.customer else "Walk-in", pay.reference or "—",
-                     _d(n.created_at) if n else "—", n.invoice.invoice_number if n else "—",
+        rows.append([inv.invoice_number, _dt(inv.invoice_date), cust, "Credit note",
+                     pay.reference or "—", _d(n.created_at) if n else "—",
+                     n.invoice.invoice_number if n else "—",
                      _m(n.total) if n else 0.0, _m(pay.amount),
                      vouchers.credit_note_balance(n) if n else 0.0])
-    return _result(["Bill", "Date", "Customer", "Credit note", "Note raised", "Note against bill",
-                    "Note value", "Used on this bill", "Left on note now"], rows,
-                   {"Redemptions": len(rows), "Used": _sum(rows, 7)},
-                   "Credit notes kept as store credit and spent against later bills. No gift "
-                   "vouchers are issued, so this lists credit notes only.")
+    return _result(["Bill", "Date", "Customer", "Kind", "Number", "Issued", "Against / sale",
+                    "Value", "Used on this bill", "Left now"], rows,
+                   {"Redemptions": len(rows), "Used": _sum(rows, 8),
+                    "Gift vouchers": sum(1 for r in rows if r[3] == "Gift voucher")},
+                   "Gift vouchers and credit notes kept as store credit, spent against bills in "
+                   "the period.")
 
 
 def _falls_in(day, start, end):
@@ -1710,6 +1722,187 @@ def scheduled_messages(ctx):
                     "Failed": count("failed"), "Queued": count("queued")},
                    "Messages due in the period and what became of each. 'Logged' means it came "
                    "due with no SMS/WhatsApp provider set up, so it was not sent.")
+
+
+# ---------------------------------------------------------------------------
+#  CRM reports — the CRM screens' records as registers
+# ---------------------------------------------------------------------------
+def _order_row(o):
+    return [o.number, _d(o.order_date), _d(o.delivery_date) if o.delivery_date else "—",
+            o.customer.name if o.customer else "—", o.contact_no or (o.customer.phone if o.customer else "") or "—",
+            o.category or "—", _name(o.received_by), _q(o.total_qty), _m(o.total_amount),
+            _m(o.paid_amount), _m(o.balance), (o.status or "").replace("_", " ").capitalize()]
+
+
+_ORDER_COLS = ["Order", "Ordered", "Deliver by", "Customer", "Contact", "Category", "Taken by",
+               "Qty", "Value", "Paid", "Balance", "Status"]
+
+
+def crm_orders(ctx):
+    q = CustomerOrder.query.filter(CustomerOrder.order_date >= ctx.start, CustomerOrder.order_date <= ctx.end)
+    if ctx.location:
+        q = q.filter(CustomerOrder.location_id == ctx.location)
+    rows = [_order_row(o) for o in q.order_by(CustomerOrder.order_date, CustomerOrder.id).all()]
+    return _result(_ORDER_COLS, rows, {"Orders": len(rows), "Value": _sum(rows, 8), "Paid": _sum(rows, 9),
+                                       "Balance": _sum(rows, 10)},
+                   "Orders taken in the period. Paid is the advances taken against each order.")
+
+
+def crm_orders_pending(ctx):
+    q = CustomerOrder.query.filter(CustomerOrder.status.in_(("new", "confirmed", "in_progress", "ready")))
+    if ctx.location:
+        q = q.filter(CustomerOrder.location_id == ctx.location)
+    rows = [_order_row(o) for o in q.order_by(CustomerOrder.delivery_date.is_(None),
+                                              CustomerOrder.delivery_date, CustomerOrder.id).all()]
+    today = date.today().strftime("%d-%m-%Y")
+    return _result(_ORDER_COLS, rows, {"Open orders": len(rows), "Value": _sum(rows, 8),
+                                       "To collect": _sum(rows, 10)},
+                   f"Every order not yet delivered or cancelled, soonest delivery first (as of {today}).")
+
+
+def gift_voucher_sales(ctx):
+    q = GiftVoucherBatch.query.filter(GiftVoucherBatch.issued_on >= ctx.start,
+                                      GiftVoucherBatch.issued_on <= ctx.end)
+    q = ctx._place(q, GiftVoucherBatch)
+    rows = []
+    for b in q.order_by(GiftVoucherBatch.issued_on, GiftVoucherBatch.id).all():
+        rows.append([b.number, _d(b.issued_on), (b.mode or "").capitalize(),
+                     b.customer.name if b.customer else "—", (b.customer.phone if b.customer else "") or "—",
+                     len(b.vouchers), _m(b.face_value), _m(b.amount), (b.method or "—").upper(),
+                     b.bank or "—", _d(b.valid_to) if b.valid_to else "—", _name(b.issued_by),
+                     b.received_by or "—"])
+    return _result(["Sale", "Issued", "Mode", "Bought by", "Mobile", "Vouchers", "Face value", "Received",
+                    "Paid by", "Bank", "Valid till", "Issued by", "Received by"], rows,
+                   {"Sales": len(rows), "Vouchers": sum(r[5] for r in rows), "Face value": _sum(rows, 6),
+                    "Received": _sum(rows, 7)},
+                   "Gift vouchers sold (or given away, mode Complimentary) in the period.")
+
+
+def gift_voucher_balance(ctx):
+    rows = []
+    for v in (GiftVoucher.query.join(GiftVoucherBatch, GiftVoucherBatch.id == GiftVoucher.batch_id)
+              .order_by(GiftVoucherBatch.issued_on, GiftVoucher.id).all()):
+        used = vouchers.gift_voucher_used(v)
+        left = round(max(0.0, (v.value or 0) - used), 2)
+        if left <= 0.009:
+            continue
+        b = v.batch
+        state = ("Cancelled" if not v.active else
+                 "Expired" if b.valid_to and b.valid_to < date.today() else "Valid")
+        rows.append([v.code, b.number, _d(b.issued_on), b.customer.name if b.customer else "—",
+                     v.given_to or "—", _m(v.value), _m(used), _m(left),
+                     _d(b.valid_to) if b.valid_to else "—", state])
+    live = [r for r in rows if r[9] == "Valid"]
+    return _result(["Voucher", "Sale", "Issued", "Bought by", "For", "Value", "Spent", "Left", "Valid till",
+                    "State"], rows,
+                   {"Vouchers": len(rows), "Unspent (valid)": round(sum(r[7] for r in live), 2)},
+                   "Every voucher with money left on it. The valid ones are what customers can still "
+                   "spend at the tills.")
+
+
+def loyalty_ledger(ctx):
+    value = float(current_app.config.get("LOYALTY_POINT_VALUE", 1.0) or 1.0)
+    rows = []
+    for t in (LoyaltyTxn.query.filter(day_from(LoyaltyTxn.created_at, ctx.start),
+                                      day_to(LoyaltyTxn.created_at, ctx.end))
+              .order_by(LoyaltyTxn.created_at, LoyaltyTxn.id).all()):
+        c = db.session.get(Customer, t.customer_id)
+        inv = db.session.get(Invoice, t.invoice_id) if t.invoice_id else None
+        kind = ("Earned" if t.reason == "earn" else "Redeemed" if t.reason == "redeem"
+                else "To coupon" if (t.reason or "").startswith("coupon") else "Adjusted")
+        rows.append([_dt(t.created_at), c.name if c else "—", (c.phone if c else "") or "—",
+                     c.card_no if c else "—", inv.invoice_number if inv else "—", kind, t.reason or "",
+                     _q(t.points), _m((t.points or 0) * value)])
+    pts = lambda k: round(sum(r[7] for r in rows if r[5] == k), 2)  # noqa: E731
+    return _result(["When", "Customer", "Mobile", "Card", "Bill", "Entry", "Detail", "Points", "Value"], rows,
+                   {"Earned": pts("Earned"), "Redeemed": pts("Redeemed"), "To coupon": pts("To coupon"),
+                    "Adjusted": pts("Adjusted")},
+                   "Every point earned, redeemed, turned into a coupon or corrected in the period.")
+
+
+def feedback_by_question(ctx):
+    rows = []
+    for q in FeedbackQuestion.query.order_by(FeedbackQuestion.sort_order, FeedbackQuestion.id).all():
+        answers = (FeedbackAnswer.query.join(CustomerFeedback, CustomerFeedback.id == FeedbackAnswer.feedback_id)
+                   .filter(FeedbackAnswer.question_id == q.id,
+                           day_from(CustomerFeedback.created_at, ctx.start),
+                           day_to(CustomerFeedback.created_at, ctx.end)).all())
+        if not answers and not q.active:
+            continue
+        scores = [a.score for a in answers if a.score is not None]
+        if q.kind == "rating":
+            summary = f"{sum(scores) / len(scores):.2f} ★" if scores else "—"
+        elif q.kind == "yesno":
+            summary = f"{sum(scores) / len(scores) * 100:.0f}% yes" if scores else "—"
+        elif q.kind == "choice":
+            counts = {}
+            for a in answers:
+                counts[a.value] = counts.get(a.value, 0) + 1
+            summary = " · ".join(f"{k} {n}" for k, n in sorted(counts.items(), key=lambda x: -x[1])) or "—"
+        else:
+            summary = f"{len(answers)} written answer(s)"
+        rows.append([q.text, q.kind.capitalize(), "Yes" if q.active else "Retired", len(answers), summary])
+    return _result(["Question", "Answered as", "On the form", "Answers", "Result"], rows,
+                   {"Questions": len(rows)},
+                   "Each feedback question and what customers answered in the period.")
+
+
+def leads_report(ctx):
+    q = Lead.query.filter(day_from(Lead.created_at, ctx.start), day_to(Lead.created_at, ctx.end))
+    if ctx.location:
+        q = q.filter(Lead.location_id == ctx.location)
+    rows = [[_d(l.created_at), l.name, l.phone or "—", (l.source or "").replace("_", " ").capitalize(),
+             l.interest or "—", _m(l.expected_value or 0), (l.status or "").capitalize(),
+             _d(l.next_follow_up) if l.next_follow_up else "—", _name(l.assigned_to),
+             (l.customer.code or l.customer.card_code) if l.customer else "—", l.lost_reason or ""]
+            for l in q.order_by(Lead.created_at, Lead.id).all()]
+    count = lambda st: sum(1 for r in rows if r[6].lower() == st)  # noqa: E731
+    return _result(["Added", "Lead", "Mobile", "Source", "Interested in", "Expected", "Status",
+                    "Follow up", "Assigned to", "Customer", "Lost because"], rows,
+                   {"Leads": len(rows), "Won": count("won"), "Lost": count("lost"),
+                    "Pipeline (open)": round(sum(r[5] for r in rows if r[6].lower() in
+                                                 ("new", "contacted", "interested")), 2)},
+                   "Leads added in the period and where each one stands now.")
+
+
+def walkin_report(ctx):
+    q = CustomerVisit.query.filter(day_from(CustomerVisit.created_at, ctx.start),
+                                   day_to(CustomerVisit.created_at, ctx.end))
+    if ctx.location:
+        q = q.filter(CustomerVisit.location_id == ctx.location)
+    rows = [[v.created_at.strftime("%d-%m-%Y %H:%M"), v.customer.name if v.customer else (v.name or "—"),
+             v.phone or "—", v.looking_for or "—", v.party_size or 1, v.floor.name if v.floor else "—",
+             _name(v.staff), (v.status or "").capitalize(), v.invoice.invoice_number if v.invoice else "—",
+             _m(v.invoice.total) if v.invoice else 0.0]
+            for v in q.order_by(CustomerVisit.created_at, CustomerVisit.id).all()]
+    bought = sum(1 for r in rows if r[7] == "Billed")
+    return _result(["In at", "Customer", "Mobile", "Looking for", "People", "Floor", "Salesperson",
+                    "Status", "Bill", "Bought"], rows,
+                   {"Walk-ins": len(rows), "Bought": bought,
+                    "Conversion %": _pct(bought, len(rows)), "Sales": _sum(rows, 9)},
+                   "Customers met at the door (CRM → Customer Divert) and whether they bought.")
+
+
+def self_registrations(ctx):
+    q = Customer.query.filter(Customer.source == "self", day_from(Customer.created_at, ctx.start),
+                              day_to(Customer.created_at, ctx.end))
+    rows = [[_d(c.created_at), c.name, c.phone or "—", c.email or "—", c.city or "—", c.area or "—",
+             c.registered_location.name if c.registered_location else "—",
+             "Waiting" if c.awaiting_approval else ("Rejected" if c.inactive else "Approved")]
+            for c in q.order_by(Customer.created_at, Customer.id).all()]
+    return _result(["Signed up", "Name", "Mobile", "Email", "City", "Area", "Branch", "Approval"], rows,
+                   {"Sign-ups": len(rows), "Waiting": sum(1 for r in rows if r[7] == "Waiting")},
+                   "Customers who signed themselves up from the QR at the door.")
+
+
+def price_list_customers(ctx):
+    rows = [[c.price_category.name, f"{c.price_category.discount_pct or 0:g}%", c.name, c.phone or "—",
+             c.code or c.card_code, c.city or "—", _m(c.total_spent)]
+            for c in (Customer.query.filter(Customer.price_category_id.isnot(None))
+                      .order_by(Customer.price_category_id, Customer.name).all()) if c.price_category]
+    return _result(["Price list", "Discount on the rest", "Customer", "Mobile", "Code", "City",
+                    "Lifetime spend"], rows, {"Customers": len(rows)},
+                   "Who buys on which price list (CRM → Price List).")
 
 
 # ===========================================================================
@@ -1827,6 +2020,22 @@ GROUPS = [
         ("inactive_customers", "Inactive Customer Report", inactive_customers,
          {"dated": False, "places": False}),
         ("scheduled_messages", "Scheduled Message Log", scheduled_messages, {"places": False}),
+    ]),
+    # The CRM screens' own registers — see app/routes/crm_*.py.
+    ("crm", "CRM Reports", [
+        ("crm_orders", "Customer Order Report", crm_orders, {"places": "location"}),
+        ("crm_orders_pending", "Pending Customer Orders", crm_orders_pending,
+         {"dated": False, "places": "location"}),
+        ("gift_voucher_sales", "Gift Voucher Sales Report", gift_voucher_sales, {}),
+        ("gift_voucher_balance", "Gift Voucher Balance Report", gift_voucher_balance,
+         {"dated": False, "places": False}),
+        ("loyalty_ledger", "Loyalty Points Ledger", loyalty_ledger, {"places": False}),
+        ("feedback_by_question", "Feedback by Question", feedback_by_question, {"places": False}),
+        ("leads_report", "Lead Report", leads_report, {"places": "location"}),
+        ("walkin_report", "Walk-in (Customer Divert) Report", walkin_report, {"places": "location"}),
+        ("self_registrations", "Self Registration Report", self_registrations, {"places": False}),
+        ("price_list_customers", "Price List Customers", price_list_customers,
+         {"dated": False, "places": False}),
     ]),
     ("mobile", "Reports - Mobile Vertical", [
         ("scheme_details", "Scheme Details Report", scheme_details, {"places": False}),

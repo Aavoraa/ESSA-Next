@@ -5,6 +5,7 @@ from datetime import datetime
 from itsdangerous import URLSafeSerializer
 from app import db
 from app.datefilter import day_from, day_to
+from app import crm
 from app import (billing_numbers, cancellation, drawer, places, promotions, schemes,
                  transfers, vouchers, warehouse_items)
 from app import modules as modules_mod
@@ -72,6 +73,8 @@ def parse_payments(data):
                              f"less was handed over than is being settled")
         if method == "credit_note" and not (row.get("reference") or "").strip():
             raise ValueError("Enter the credit note's number to spend it")
+        if method == "gift_voucher" and not (row.get("reference") or "").strip():
+            raise ValueError("Enter the gift voucher's number to spend it")
         if method != "cash" and tendered > amount + SETTLE_TOLERANCE:
             # Only a drawer gives change. A card or a UPI transfer is for an
             # exact amount, and recording an over-tender on one would invent
@@ -455,11 +458,28 @@ def api_product(code=None):
     p = warehouse_items.resolve_scan(code)
     if not p:
         return jsonify({"error": "not found"}), 404
+    # A customer on a price list (CRM → Price List) is charged that list's price.
+    plist = crm.price_category_of(request.args.get("customer_id", type=int))
     return jsonify({
         "id": p.id, "sku": p.sku, "barcode": p.barcode, "name": p.name,
-        "price": p.selling_price, "gst": p.gst_rate,
+        "price": crm.list_prices([p], plist)[p.id] if plist else p.selling_price,
+        "base_price": p.selling_price, "price_list": plist.name if plist else None,
+        "gst": p.gst_rate,
         "stock": p.stock_qty, "unit": p.unit, "hsn": p.hsn_code,
     })
+
+
+@pos_bp.route("/api/list-prices")
+@login_required
+def api_list_prices():
+    """{product id: price} for the lines already on the bill, when a customer on
+    a price list is attached after they were scanned. Without one, the ordinary
+    prices — which is how detaching the customer puts the prices back."""
+    ids = [int(x) for x in (request.args.get("ids") or "").split(",") if x.strip().isdigit()][:500]
+    products = Product.query.filter(Product.id.in_(ids)).all() if ids else []
+    plist = crm.price_category_of(request.args.get("customer_id", type=int))
+    return jsonify({"price_list": plist.name if plist else None,
+                    "prices": {str(k): v for k, v in crm.list_prices(products, plist).items()}})
 
 
 @pos_bp.route("/api/product-search")
@@ -803,7 +823,7 @@ def checkout():
 
         # Loyalty redemption
         loyalty_redeemed_value = 0.0
-        if customer and redeem_points > 0:
+        if customer and redeem_points > 0 and not customer.loyalty_disabled:
             available = customer.loyalty_points
             use = min(redeem_points, available, pre_loyalty_total)
             loyalty_redeemed_value = use * current_app.config["LOYALTY_POINT_VALUE"]
@@ -894,7 +914,10 @@ def _take_payment(inv, payments, payment_method):
 
     # Loyalty is earned on money paid, so it is earned here.
     customer = Customer.query.get(inv.customer_id) if inv.customer_id else None
-    if customer and inv.total >= current_app.config["LOYALTY_MIN_BILL"]:
+    # A customer whose loyalty is switched off (CRM → Customer) still has their
+    # spend counted — it is their history — but earns no points on it.
+    if (customer and not customer.loyalty_disabled
+            and inv.total >= current_app.config["LOYALTY_MIN_BILL"]):
         earned = round(inv.total * current_app.config["LOYALTY_EARN_RATE"], 2)
         inv.loyalty_earned = earned
         customer.loyalty_points = (customer.loyalty_points or 0) + earned
@@ -1002,6 +1025,19 @@ def api_credit_note():
     return jsonify({"ok": True, "number": note.number, "total": note.total,
                     "balance": vouchers.credit_note_balance(note),
                     "customer": note.invoice.customer.name if note.invoice.customer else None})
+
+
+@pos_bp.route("/api/gift-voucher")
+@login_required
+def api_gift_voucher():
+    """What is left on a gift voucher, for the Gift voucher tender."""
+    v = vouchers.find_gift_voucher(request.args.get("code"))
+    problem = vouchers.gift_voucher_problem(v)
+    if problem:
+        return jsonify({"ok": False, "error": problem})
+    return jsonify({"ok": True, "number": v.code, "value": v.value,
+                    "balance": vouchers.gift_voucher_balance(v),
+                    "valid_to": v.batch.valid_to.isoformat() if v.batch.valid_to else None})
 
 
 @pos_bp.route("/api/advance-balance")
