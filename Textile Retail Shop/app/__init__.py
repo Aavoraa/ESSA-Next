@@ -166,6 +166,15 @@ def create_app(config_class=Config):
     from app.routes.coupons import coupons_bp
     from app.routes.drawer import drawer_bp
     from app.routes.feedback import feedback_bp
+    # CRM — the screens after the customer master (see app/modules.py)
+    from app.routes.crm_orders import orders_bp
+    from app.routes.crm_lookup import loyalty_bp
+    from app.routes.crm_vouchers import giftvouchers_bp
+    from app.routes.crm_pricelist import pricelist_bp
+    from app.routes.crm_analyser import analyser_bp
+    from app.routes.crm_sms import sms_bp
+    from app.routes.crm_feedback import crmfeedback_bp
+    from app.routes.crm_people import divert_bp, leads_bp, registration_bp, selfreg_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(main_bp)
@@ -187,6 +196,18 @@ def create_app(config_class=Config):
     app.register_blueprint(drawer_bp, url_prefix="/drawer")
     # The customer's own feedback page: no login, reached from the QR on a bill.
     app.register_blueprint(feedback_bp, url_prefix="/feedback")
+    app.register_blueprint(orders_bp, url_prefix="/orders")
+    app.register_blueprint(loyalty_bp, url_prefix="/loyalty")
+    app.register_blueprint(giftvouchers_bp, url_prefix="/gift-vouchers")
+    app.register_blueprint(pricelist_bp, url_prefix="/price-list")
+    app.register_blueprint(analyser_bp, url_prefix="/crm-analyser")
+    app.register_blueprint(sms_bp, url_prefix="/send-sms")
+    app.register_blueprint(crmfeedback_bp, url_prefix="/crm-feedback")
+    app.register_blueprint(divert_bp, url_prefix="/customer-divert")
+    app.register_blueprint(leads_bp, url_prefix="/leads")
+    app.register_blueprint(registration_bp, url_prefix="/registration")
+    # The customer's own sign-up page: no login, reached from the QR at the door.
+    app.register_blueprint(selfreg_bp, url_prefix="/join")
 
     # A product detailed and posted from the warehouse's mobile app should be in
     # the shop by the time anyone looks, without a restart or a button. Checking
@@ -281,7 +302,7 @@ def create_app(config_class=Config):
         from flask_login import current_user
         store_user = modules.store_user(request)
         return {
-            "SHOP_MODULES": modules.visible(current_user, restricted=store_user),
+            "SHOP_MODULES": modules.menu(current_user, restricted=store_user, endpoint=request.endpoint),
             "STORE_USER": store_user,
             "CURRENT_MODULE": modules.current(request.endpoint),
             "SHOP_NAME": app.config["SHOP_NAME"],

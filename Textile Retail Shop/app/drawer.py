@@ -21,7 +21,8 @@ from datetime import datetime
 from sqlalchemy import func
 
 from app import db
-from app.models import CreditNote, CustomerAdvance, DrawerSession, Invoice, InvoicePayment
+from app.models import (CreditNote, CustomerAdvance, DrawerSession, GiftVoucherBatch, Invoice,
+                        InvoicePayment)
 
 
 def current(counter_id):
@@ -57,6 +58,11 @@ def breakdown(session, until=None):
                    .filter(CustomerAdvance.method == "cash", at_till(CustomerAdvance.counter_id),
                            CustomerAdvance.created_at >= start, CustomerAdvance.created_at <= end)
                    .scalar() or 0)
+    vouchers_in = (db.session.query(func.coalesce(func.sum(GiftVoucherBatch.amount), 0))
+                   .filter(GiftVoucherBatch.method == "cash", GiftVoucherBatch.mode == "direct",
+                           at_till(GiftVoucherBatch.counter_id),
+                           GiftVoucherBatch.created_at >= start, GiftVoucherBatch.created_at <= end)
+                   .scalar() or 0)
     refunds = (db.session.query(func.coalesce(func.sum(CreditNote.total), 0))
                .filter(CreditNote.refund_method == "cash", at_till(CreditNote.counter_id),
                        CreditNote.created_at >= start, CreditNote.created_at <= end)
@@ -71,6 +77,7 @@ def breakdown(session, until=None):
         "Opening float": round(session.opening_float or 0, 2),
         "Cash on bills": round(float(tendered) + float(unsplit), 2),
         "Advances taken in cash": round(float(advances_in), 2),
+        "Gift vouchers sold for cash": round(float(vouchers_in), 2),
         # `or 0.0`: minus nothing is -0.0, which prints as "₹-0.00"
         "Cash refunds": -round(float(refunds), 2) or 0.0,
         "Advances refunded in cash": -round(float(advances_out), 2) or 0.0,

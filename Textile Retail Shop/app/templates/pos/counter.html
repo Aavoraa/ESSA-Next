@@ -616,7 +616,7 @@ async function handleScan(code){
   if (/^STF\d+$/i.test(code)){ say(`No active staff member ${code}.`, 'bad'); return; }
   try {
     // ?code= rather than a path segment: a warehouse QR can carry '/' and '|'.
-    const r = await fetch(`${SHOP_ROOT}/pos/api/product?code=${encodeURIComponent(code)}`);
+    const r = await fetch(`${SHOP_ROOT}/pos/api/product?code=${encodeURIComponent(code)}${customer ? '&customer_id=' + customer.id : ''}`);
     if (r.ok){ addProduct(await r.json()); return; }
     say(`No product or staff ID for “${code}”.`, 'bad');
   } catch (err){ say('Lookup failed: ' + err, 'bad'); }
@@ -718,7 +718,7 @@ async function entryLookup(){
   const code = $('enBarcode').value.trim();
   if (!code) return;
   try {
-    const r = await fetch(`${SHOP_ROOT}/pos/api/product?code=${encodeURIComponent(code)}`);
+    const r = await fetch(`${SHOP_ROOT}/pos/api/product?code=${encodeURIComponent(code)}${customer ? '&customer_id=' + customer.id : ''}`);
     if (!r.ok){ say(`No product for “${code}”.`, 'bad'); $('enBarcode').select(); return; }
     if (!entryPick(await r.json())) $('enBarcode').select();
   } catch (err){ say('Lookup failed: ' + err, 'bad'); }
@@ -1113,6 +1113,25 @@ function paintCustomer(c){
     clearCoupon(`${appliedCoupon.code} belongs to another customer — removed.`); return;
   }
   renderBill();
+  repriceForCustomer();
+}
+// A customer on a price list (CRM → Price List) pays that list's prices — for
+// what is already on the bill too, and back to the ordinary prices without them.
+let pricedFor = null;
+async function repriceForCustomer(){
+  const cid = customer ? customer.id : null;
+  if (cid === pricedFor || !lines.length){ pricedFor = cid; return; }
+  pricedFor = cid;
+  const ids = [...new Set(lines.map((l) => l.product_id))].join(',');
+  try {
+    const j = await (await fetch(`${SHOP_ROOT}/pos/api/list-prices?ids=${ids}${cid ? '&customer_id=' + cid : ''}`)).json();
+    let n = 0;
+    lines.forEach((l) => {
+      const p = j.prices[l.product_id];
+      if (p !== undefined && p !== l.price){ l.price = p; n++; }
+    });
+    if (n){ changed(); say(j.price_list ? `${n} line(s) priced on the ${j.price_list} list.` : `${n} line(s) back to the ordinary price.`, 'ok'); }
+  } catch (err){ /* the ordinary prices stand */ }
 }
 async function lookupCustomer(q){
   q = (q || '').trim(); if (!q) return;

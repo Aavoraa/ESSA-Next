@@ -157,10 +157,11 @@ today, week_ago = date.today(), date.today() - timedelta(days=7)
 print("\n-- the catalogue mirrors the reference menu")
 with app.app_context():
     cat = rr.catalogue()
-    check("eleven groups", len(cat), 11)
-    check("seventy reports", sum(len(g["reports"]) for g in cat), 70)
+    # …and the CRM's ten after Customer Reports (app/routes/crm_*.py)
+    check("twelve groups", len(cat), 12)
+    check("eighty reports", sum(len(g["reports"]) for g in cat), 80)
     check("group sizes, in menu order",
-          [len(g["reports"]) for g in cat], [17, 4, 8, 2, 9, 6, 4, 4, 14, 1, 1])
+          [len(g["reports"]) for g in cat], [17, 4, 8, 2, 9, 6, 4, 4, 14, 10, 1, 1])
     unavailable = [r["key"] for g in cat for r in g["reports"] if r["unavailable"]]
     check("only the stock marker is honest about having nothing recorded",
           unavailable, ["stock_marker"])

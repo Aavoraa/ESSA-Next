@@ -37,8 +37,10 @@ import difflib
 import json
 import re
 
+from datetime import timedelta
+
 from .. import models, runtime
-from . import (audit as audit_svc, business_day, command_center as cc, nlq,
+from . import (audit as audit_svc, business_day, command_center as cc, crm_insights as crm, nlq,
                pos_insights, stock_locations as stock_loc, trace as trace_svc)
 from .figures import inr, inr_short, plural, qty as fmt_qty, spoken_inr
 
@@ -63,6 +65,17 @@ INTENTS = {
     "counts": "How many warehouses, stores, POS counters or users there are.",
     "activity": "What people did — actions on the audit trail in a period, optionally by one person. 'What did Ravi do today'.",
     "trace": "Track ONE item or document end to end: a product QR, SKU, piece code, GRN number, supplier invoice number, transfer code, LR number or store bill number.",
+    # ---- the CRM (the Store's customer side) ----
+    "customer": "ONE customer: their details, loyalty points, spend and recent bills — asked by mobile number, customer code, loyalty card or name. 'Details of 9876543210', 'How many points does Priya have'.",
+    "customers": "The customer book: how many customers, new sign-ups in a period, sign-ups awaiting approval, who bought and how many came back. 'How many new customers this month', 'top customers'.",
+    "birthdays": "Customers whose birthday or wedding anniversary falls in a period (default the next 7 days).",
+    "customer_orders": "CUSTOMER orders (things ordered for later delivery, not supplier purchase orders): taken in a period, still open, due or overdue for delivery, ready for pickup, money paid against them.",
+    "gift_vouchers": "Gift vouchers: sold in a period (count, face value, money received), redeemed at the tills, and the unspent balance still out with customers.",
+    "coupons": "Gift coupons: issued in a period, redeemed, and the discount they gave — by campaign.",
+    "loyalty": "Loyalty points across all customers: earned and redeemed in a period, points still held and what they are worth. (One customer's points is `customer`.)",
+    "feedback": "Customer feedback and ratings: responses in a period, average stars, unhappy customers to call back, scores per feedback question.",
+    "leads": "Sales leads / enquiries: open leads, follow-ups due today or overdue, new leads, won and lost, pipeline value.",
+    "walkins": "Walk-ins / footfall at the door (Customer Divert): how many came in, how many bought, who served them.",
 }
 NONE = "none"
 GROUPS = ("warehouse", "store", "floor", "counter", "cashier", "staff", "category",
@@ -145,8 +158,29 @@ def _offline(db, question):
     group = next((g for g, words in _GROUP_WORDS if _has(t, words)), "")
     code = _code_in(question)
 
-    if code:
+    crm_code = _crm_code(question)
+    if crm_code:
+        intent, code = "customer" if crm_code[0] == "customer" else "trace", crm_code[1]
+    elif code:
         intent = "trace"
+    elif _has(t, ("birthday", "anniversar", "பிறந்தநாள்")):
+        intent = "birthdays"
+    elif _has(t, ("gift voucher", "voucher", "gift card")):
+        intent = "gift_vouchers"
+    elif _has(t, ("coupon",)):
+        intent = "coupons"
+    elif re.search(r"\bleads?\b|enquir|inquir|follow[ -]?up|prospect", t):
+        intent = "leads"
+    elif re.search(r"walk[ -]?ins?\b|footfall|foot fall|divert|visitors?\b", t):
+        intent = "walkins"
+    elif _has(t, ("feedback", "rating", "review", "complain", "stars", "satisf", "கருத்து")):
+        intent = "feedback"
+    elif _has(t, ("loyalty", " points", "reward")):
+        intent = "customer" if _has(t, (" of ", " for ", " does ", " has ")) and \
+            not _has(t, ("all customers", "total", "everyone", "held", "outstanding", "how many points were")) \
+            else "loyalty"
+    elif re.search(r"\borders?\b", t) and not _has(t, ("purchase", " po ", " pos", "supplier", "vendor")):
+        intent = "customer_orders"
     elif _has(t, ("dead stock", "no sale", "not sold", "unsold", "not moving", "non moving",
                   "non-moving", "slow moving", "slow-moving", "no movement", " idle", "ageing",
                   "aging", "விற்காத")):
@@ -185,6 +219,9 @@ def _offline(db, question):
         intent = "lr"
     elif _has(t, ("invoice", "bill entry", "document", "விலைப்பட்டியல்")):
         intent = "invoices"
+    elif _has(t, ("customer", "client", "sign up", "signup", "sign-up", "registration", "registered",
+                  "member", "வாடிக்கையாளர்")) and (rank or not _has(t, _SALES + (" return",))):
+        intent = "customers"
     elif " how many " in t and _has(t, ("warehouses", "stores", "shops", "branches", "counters",
                                         "tills", " pos", "users", "people", "accounts")) \
             and not _has(t, _SALES + _STOCK):
@@ -227,6 +264,12 @@ def _offline(db, question):
         sm = re.search(r"\b(?:to|from)\s+([a-z][a-z0-9&.' -]{2,40}?)\s*[?.!]?\s*$", t)
         if sm:
             item = sm.group(1).strip()
+
+    if intent == "customer" and not code:
+        cm2 = re.search(r"\b(?:of|for|does|has|is|about|customer)\s+([a-z][a-z.' ]{1,40}?)"
+                        r"(?=\s+(?:have|has|got|earn|hold|points|loyalty)\b|\s*[?.!]?\s*$)", t)
+        if cm2 and cm2.group(1).strip() not in ("the", "a", "this", "that", "all", "my", "our"):
+            item = cm2.group(1).strip()
 
     person = ""
     if intent in ("activity", "discounts"):
@@ -275,7 +318,8 @@ Leave both empty when no period is mentioned — the system applies its own defa
 3. warehouse / store / floor / counter: the name as listed above when the question names \
 one, else empty. person: a person's name if the question is about someone. item: the \
 product or category asked about in the person's own words ("ladies shirts"), else empty. \
-code: a document number or tag code when intent is trace.
+code: a document number or tag code when intent is trace. For `customer`, put the \
+mobile number, customer code or loyalty card in code, or the customer's name in person.
 4. group_by: only for sales_rank / stock_rank / discounts — what is being ranked.
 5. order: "top" for highest/most/best, "bottom" for lowest/least, else empty.
 6. days: a number of days mentioned (e.g. dead stock "above 90 days"), else empty.
@@ -1011,10 +1055,271 @@ def a_activity(db, read, sc, per, role, allowed):
 # ---------------------------------------------------------------------------
 #  The whole answer
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+#  The CRM — customers, orders, vouchers, coupons, loyalty, feedback, leads
+# ---------------------------------------------------------------------------
+_ORDER_NO = re.compile(r"^ORD-\d{3,}$", re.I)
+_GV_CODE = re.compile(r"^GV[0-9A-F]{8}$", re.I)
+_GV_SALE = re.compile(r"^GVS-\d{3,}$", re.I)
+
+
+def _crm_code(question):
+    """("customer", phone/code) or ("crm", order/voucher number) named in a question,
+    or None. Checked BEFORE the trace: a 10-digit number is a mobile, not a tag."""
+    q = (question or "").strip()
+    for tok in q.split():
+        tok = tok.strip("?.!,\"'“”()")
+        if _ORDER_NO.match(tok) or _GV_CODE.match(tok) or _GV_SALE.match(tok):
+            return ("crm", tok.upper())
+        if re.match(r"^CUST\d{1,9}$", tok, re.I):
+            return ("customer", tok.upper())
+    ph = crm.phone_in(q)
+    if ph and len(ph.lstrip("+")) in (10, 12, 13):
+        return ("customer", ph)
+    return None
+
+
+def _crm_loc(sc):
+    return (sc.get("at") or {}).get("location_ids") if sc else None
+
+
+def _crm_off():
+    return _out("CRM", "—", "The stores' database cannot be read from here, so there are no customer "
+                "figures to answer with.", ok=False)
+
+
+def _profile(c):
+    pts = c["points"] or 0
+    line = (f"{c['name']} ({c['code']}): {inr(c['spent'] or c['billed'])} spent on "
+            f"{plural(c['bills'], 'bill')}, {fmt_qty(pts)} loyalty points"
+            + (f", {plural(c['open_orders'], 'open order')}" if c["open_orders"] else "") + ".")
+    facts = [("Mobile", c["phone"] or "—"), ("Customer code", c["code"]), ("Loyalty card", c["card"] or c["code"]),
+             ("Category", c["category"]), ("City", c["city"]), ("Points", fmt_qty(pts)),
+             ("Lifetime spend", inr(c["spent"] or c["billed"])),
+             ("Last bill", _local_time(c["last_bill"]) if c["last_bill"] else "never"),
+             ("Open orders", str(c["open_orders"]) if c["open_orders"] else None),
+             ("Status", "awaiting approval" if c["awaiting"] else None)]
+    rows = [{"Bill": r["bill"], "When": _local_time(r["when"]), "Total": r["total"]} for r in c["recent"]]
+    return _out(c["name"], fmt_qty(pts) + " pts", line, None, facts, ["Bill", "When", "Total"], rows,
+                "The ten most recent bills.", {"tab": "pos:customers"})
+
+
+def a_customer(db, read, sc, per):
+    if not crm.available():
+        return _crm_off()
+    asked = read.get("code") or read.get("person") or read.get("item") or ""
+    c = crm.find_customer(asked) or crm.find_customer(read.get("question", ""))
+    if c is None:
+        hits = crm.find_customers_named(asked) if asked else []
+        if len(hits) == 1:
+            c = crm.find_customer(hits[0]["phone"] or "") if hits[0]["phone"] else None
+        if c is None and hits:
+            return _out("Customers", str(len(hits)), f"{plural(len(hits), 'customer')} match “{asked}” — "
+                        "which one?", None, None, ["Customer", "Mobile", "Points", "Lifetime spend"],
+                        [{"Customer": h["name"], "Mobile": h["phone"] or "—", "Points": h["points"],
+                          "Lifetime spend": h["spent"]} for h in hits], None, {"tab": "pos:customers"})
+    if c is None:
+        return _out("Customer", "—", f"No customer found for “{asked or read.get('question', '')}”.",
+                    ok=False, open_={"tab": "pos:customers"})
+    return _profile(c)
+
+
+def a_customers(db, read, sc, per):
+    if not crm.available():
+        return _crm_off()
+    r = crm.customers(per["start"], per["end"], _crm_loc(sc))
+    title = _titled(per["label"], "Customers")
+    if read.get("order") or _has(f" {(read.get('question') or '').lower()} ", _RANK):
+        line = (f"{_titled(per['label'], 'Top customers')}: "
+                + (f"{r['top'][0]['Customer']} leads with {inr(r['top'][0]['Spent'])} on "
+                   f"{plural(r['top'][0]['Bills'], 'bill')}." if r["top"] else "nobody bought in this period."))
+        return _out(_titled(per["label"], "Top customers"), inr(r["top"][0]["Spent"]) if r["top"] else "—",
+                    line, None, None, ["Customer", "Mobile", "Bills", "Spent"], r["top"],
+                    "By what they spent in the period; cancelled bills are left out.",
+                    {"tab": "pos:crm_analyser"})
+    line = (f"{title}: {plural(r['new'], 'new customer')}, {plural(r['buyers'], 'customer')} bought "
+            f"({r['repeat']} more than once). {r['active']:,} active customers in all"
+            + (f"; {plural(r['pending'], 'sign-up')} waiting for approval." if r["pending"] else "."))
+    return _out(title, f"{r['new']:,} new", line, None,
+                [("Active customers", f"{r['active']:,}"), ("New", str(r["new"])),
+                 ("Bought", str(r["buyers"])), ("Came back", str(r["repeat"])),
+                 ("Awaiting approval", str(r["pending"]) if r["pending"] else None)],
+                ["Customer", "Mobile", "City", "Category", "Joined via", "Joined"],
+                [{**x, "Joined": _local_time(x["Joined"])} for x in r["rows"]],
+                "The customers who joined in the period. The customer book is company-wide.",
+                {"tab": "pos:crm_analyser"})
+
+
+def a_birthdays(db, read, sc, per):
+    if not crm.available():
+        return _crm_off()
+    t = f" {(read.get('question') or '').lower()} "
+    kind = "anniversary" if "anniversar" in t else "birthday"
+    if read.get("date_from") or read.get("date_to"):
+        d0 = business_day.parse_day(per["from"])
+        d1 = business_day.parse_day(per["to"])
+        when = per["label"]
+    else:
+        d0 = business_day.today()
+        d1 = d0 + timedelta(days=7)
+        when = "the next 7 days"
+    rows = crm.occasions(kind, d0, d1)
+    noun = "Birthdays" if kind == "birthday" else "Wedding anniversaries"
+    line = f"{noun} {_phrase(when) if when != 'the next 7 days' else 'in ' + when}: {plural(len(rows), 'customer')}."
+    return _out(noun, str(len(rows)), line, None, None, ["Customer", "Mobile", "On", "Lifetime spend"],
+                rows, "Queue wishes for them under Customers → Messages.", {"tab": "pos:send_sms"})
+
+
+def a_customer_orders(db, read, sc, per):
+    if not crm.available():
+        return _crm_off()
+    d0, d1 = business_day.parse_day(per["from"]), business_day.parse_day(per["to"])
+    r = crm.orders(d0, d1, _crm_loc(sc))
+    t = f" {(read.get('question') or '').lower()} "
+    pending = _has(t, ("pending", "open", "due", "overdue", "deliver", "ready", "outstanding", "not delivered"))
+    title = "Open customer orders" if pending else _titled(per["label"], "Customer Orders")
+    line = (f"{title}: " + (f"{plural(len(r['open']), 'order')} open worth {inr(r['open_value'])} "
+                            f"({inr(r['open_balance'])} still to collect)"
+                            if pending else f"{plural(len(r['taken']), 'order')} taken worth {inr(r['taken_value'])}")
+            + f"; {plural(len(r['due']), 'order')} due or overdue, {len(r['ready'])} ready for pickup.")
+    rows = r["due"] if _has(t, ("due", "overdue")) else (r["open"] if pending else r["taken"])
+    return _out(title, str(len(r["open"] if pending else r["taken"])), line, None,
+                [("Taken", f"{len(r['taken'])} · {inr(r['taken_value'])}"), ("Open", str(len(r["open"]))),
+                 ("Due / overdue", str(len(r["due"]))), ("Ready", str(len(r["ready"]))),
+                 ("To collect", inr(r["open_balance"]))],
+                ["Order", "Ordered", "Deliver by", "Customer", "Mobile", "Status", "Value", "Paid", "Balance"],
+                rows, None, {"tab": "pos:crm_orders"})
+
+
+def a_gift_vouchers(db, read, sc, per):
+    if not crm.available():
+        return _crm_off()
+    d0, d1 = business_day.parse_day(per["from"]), business_day.parse_day(per["to"])
+    r = crm.gift_vouchers(d0, d1, per["start"], per["end"], _crm_loc(sc))
+    title = _titled(per["label"], "Gift Vouchers")
+    line = (f"{title}: {plural(r['sold'], 'voucher')} sold worth {inr(r['face'])} "
+            f"({inr(r['received'])} received); {inr(r['redeemed'])} redeemed on "
+            f"{plural(r['redeemed_bills'], 'bill')}. {inr(r['outstanding'])} is still unspent on "
+            f"{plural(r['live_vouchers'], 'voucher')}.")
+    return _out(title, inr(r["face"]), line, None,
+                [("Sold", str(r["sold"])), ("Face value", inr(r["face"])), ("Received", inr(r["received"])),
+                 ("Redeemed", inr(r["redeemed"])), ("Unspent (all time)", inr(r["outstanding"]))],
+                ["Sale", "Issued", "Bought by", "Mobile", "Mode", "Vouchers", "Face value", "Received", "Paid by"],
+                r["rows"], "Unspent is what customers can still spend at the tills — a liability until they do.",
+                {"tab": "pos:gift_vouchers"})
+
+
+def a_coupons(db, read, sc, per):
+    if not crm.available():
+        return _crm_off()
+    r = crm.coupons(per["start"], per["end"])
+    title = _titled(per["label"], "Gift Coupons")
+    line = (f"{title}: {plural(r['issued'], 'coupon')} issued, {r['redeemed']} redeemed, "
+            f"taking {inr(r['discount'])} off bills.")
+    return _out(title, inr(r["discount"]), line, None,
+                [("Issued", str(r["issued"])), ("Redeemed", str(r["redeemed"])), ("Discount", inr(r["discount"]))],
+                ["Campaign", "Redeemed", "Discount given"], r["rows"], None, {"tab": "pos:gift_coupons"})
+
+
+def a_loyalty(db, read, sc, per):
+    if not crm.available():
+        return _crm_off()
+    r = crm.loyalty(per["start"], per["end"])
+    title = _titled(per["label"], "Loyalty Points")
+    line = (f"{title}: {fmt_qty(r['earned'])} points earned, {fmt_qty(r['redeemed'])} redeemed. "
+            f"{fmt_qty(r['held'])} points are held by {plural(r['holders'], 'customer')}.")
+    return _out(title, fmt_qty(r["earned"]), line, None,
+                [("Earned", fmt_qty(r["earned"])), ("Redeemed", fmt_qty(r["redeemed"])),
+                 ("Adjusted / to coupons", fmt_qty(r["other"]) if r["other"] else None),
+                 ("Held now", fmt_qty(r["held"])), ("Customers holding", str(r["holders"]))],
+                ["Customer", "Mobile", "Points", "Lifetime spend"], r["rows"],
+                "The twenty biggest balances. Loyalty is company-wide.", {"tab": "pos:loyalty"})
+
+
+def a_feedback(db, read, sc, per):
+    if not crm.available():
+        return _crm_off()
+    r = crm.feedback(per["start"], per["end"])
+    title = _titled(per["label"], "Customer Feedback")
+    if not r["count"]:
+        return _out(title, "—", f"{title}: no responses yet.", None, None, [], [], None,
+                    {"tab": "pos:feedback_dashboard"})
+    line = (f"{title}: {plural(r['count'], 'response')}, averaging {r['average']:.1f} stars — "
+            f"{r['happy']} happy, {r['unhappy']} unhappy to call back.")
+    t = f" {(read.get('question') or '').lower()} "
+    by_q = _has(t, ("question", "staff", "billing", "trial", "range", "each"))
+    rows, cols = ((r["questions"], ["Question", "Answers", "Score"]) if by_q or not r["low"]
+                  else ([{**x, "When": _local_time(x["When"])} for x in r["low"]],
+                        ["When", "Customer", "Mobile", "Rating", "Comment"]))
+    return _out(title, f"{r['average']:.1f} ★", line, None,
+                [("Responses", str(r["count"])), ("Average", f"{r['average']:.2f} ★"),
+                 ("Happy (4–5 ★)", str(r["happy"])), ("Unhappy", str(r["unhappy"]))],
+                cols, rows, None, {"tab": "pos:feedback_dashboard"})
+
+
+def a_leads(db, read, sc, per):
+    if not crm.available():
+        return _crm_off()
+    r = crm.leads(per["start"], per["end"], _crm_loc(sc))
+    line = (f"{plural(r['open'], 'open lead')} worth {inr(r['pipeline'])}: {r['due']} to follow up today, "
+            f"{r['overdue']} overdue. {_titled(per['label'], 'New')}: {r['new']}; won {r['won']}, lost {r['lost']}.")
+    return _out("Leads", str(r["open"]), line, None,
+                [("Open", str(r["open"])), ("Due today", str(r["due"])), ("Overdue", str(r["overdue"])),
+                 ("Pipeline", inr(r["pipeline"])), ("New", str(r["new"])), ("Won", str(r["won"])),
+                 ("Lost", str(r["lost"]))],
+                ["Lead", "Mobile", "Source", "Interested in", "Expected", "Status", "Follow up", "Assigned to"],
+                r["rows"], None, {"tab": "pos:leads"})
+
+
+def a_walkins(db, read, sc, per):
+    if not crm.available():
+        return _crm_off()
+    d0, d1 = business_day.parse_day(per["from"]), business_day.parse_day(per["to"])
+    r = crm.walkins(d0, d1, _crm_loc(sc))
+    title = _titled(per["label"], "Walk-ins")
+    rate = f" ({r['billed'] / r['total'] * 100:.0f}%)" if r["total"] else ""
+    line = (f"{title}: {plural(r['total'], 'customer')} walked in, {r['billed']} bought{rate} for "
+            f"{inr(r['bought'])}, {r['left']} left without buying"
+            + (f", {r['open']} still on the floor." if r["open"] else "."))
+    return _out(title, str(r["total"]), line, None,
+                [("Walked in", str(r["total"])), ("Bought", str(r["billed"])), ("Left", str(r["left"])),
+                 ("On the floor", str(r["open"]) if r["open"] else None), ("Sales", inr(r["bought"]))],
+                ["In at", "Customer", "Mobile", "Looking for", "Floor", "Salesperson", "Status", "Bill", "Bought"],
+                r["rows"], None, {"tab": "pos:customer_divert"})
+
+
+def a_crm_code(code):
+    """An order number or a gift voucher / voucher sale code."""
+    if _ORDER_NO.match(code):
+        o = crm.find_order(code)
+        if o:
+            line = (f"Order {o['Order']} for {o['Customer']}: {inr(o['Value'])}, {inr(o['Paid'])} paid, "
+                    f"{o['Status']}" + (f", deliver by {o['Deliver by']}" if o["Deliver by"] != "—" else "") + ".")
+            return _out(f"Order {o['Order']}", o["Status"], line, None, [(k, str(v)) for k, v in o.items()],
+                        [], [], None, {"tab": "pos:crm_orders"})
+    elif _GV_CODE.match(code):
+        v = crm.find_voucher(code)
+        if v:
+            state = "cancelled" if not v["active"] else ("spent" if v["left"] <= 0 else f"{inr(v['left'])} left")
+            line = f"Gift voucher {v['code']}: worth {inr(v['value'])}, {inr(v['spent'])} spent — {state}."
+            return _out(f"Gift voucher {v['code']}", inr(v["left"]), line, None,
+                        [("Value", inr(v["value"])), ("Spent", inr(v["spent"])), ("Left", inr(v["left"])),
+                         ("Valid till", v["valid_to"] or "no expiry"), ("Bought by", v["buyer"]),
+                         ("For", v["given_to"]), ("Sale", v["sale"])], [], [], None,
+                        {"tab": "pos:gift_vouchers"})
+    elif _GV_SALE.match(code):
+        return _out(f"Gift voucher sale {code}", "", f"{code} is a gift voucher sale — open Gift Voucher → "
+                    "Transaction History and search it to see each voucher.", open_={"tab": "pos:gift_vouchers"})
+    return None
+
+
 _DEFAULT_PERIOD = {"sales": "today", "sales_rank": "today", "discounts": "today",
                    "profit": "today", "purchases": "today", "payments": "today",
                    "returns": "today", "transfers": "today", "activity": "today",
-                   "invoices": "today", "lr": "today"}
+                   "invoices": "today", "lr": "today",
+                   "customers": "month", "customer_orders": "today", "gift_vouchers": "month",
+                   "coupons": "month", "loyalty": "month", "feedback": "month", "leads": "month",
+                   "walkins": "today", "birthdays": "today"}
 
 
 def ask(db, question, role="admin", allowed=None):
@@ -1035,6 +1340,18 @@ def ask(db, question, role="admin", allowed=None):
                                                    "group_by", "order", "days") if read.get(k)},
               "notes": []}
 
+    # A CRM document number (an order, a gift voucher) is the CRM's to answer,
+    # not the warehouse trace's.
+    if intent == "trace":
+        crm_hit = _crm_code(read.get("code") or question)
+        if crm_hit and crm_hit[0] == "customer":
+            intent = interp["intent"] = "customer"
+            read["code"] = crm_hit[1]
+        elif crm_hit:
+            out = a_crm_code(crm_hit[1])
+            if out:
+                return {**out, "question": question, "intent": "trace", "interpretation": interp}
+
     if intent == "trace":
         out = trace_svc.find(db, read.get("code") or question, allowed=allowed)
         out.setdefault("title", "Track")
@@ -1044,6 +1361,19 @@ def ask(db, question, role="admin", allowed=None):
         out.setdefault("rows", [])
         return {**out, "question": question, "intent": "trace", "interpretation": interp}
 
+    if intent == NONE or intent not in INTENTS:
+        # Last try before giving up: a question that is only somebody's name, or
+        # carries a mobile number, is asking about that customer.
+        if crm.available() and len(question.split()) <= 4:
+            hit = crm.find_customer(question)
+            if hit is None:
+                named = crm.find_customers_named(question)
+                if len(named) == 1 and named[0]["phone"]:
+                    hit = crm.find_customer(named[0]["phone"])
+            if hit:
+                interp["intent"] = "customer"
+                interp["reading"] = interp["reading"] or "a customer's name"
+                return {**_profile(hit), "question": question, "intent": "customer", "interpretation": interp}
     if intent == NONE or intent not in INTENTS:
         return {"ok": False, "question": question, "intent": NONE, "title": "Not sure",
                 "line": "I couldn't match that to something I can answer yet — try one of the examples, "
@@ -1065,7 +1395,11 @@ def ask(db, question, role="admin", allowed=None):
         "pending_payments": a_pending_payments, "pending_grns": a_pending_grns,
         "returns": a_returns, "stock": a_stock, "stock_rank": a_stock_rank,
         "low_stock": a_low_stock, "dead_stock": a_dead_stock, "transfers": a_transfers,
+        "customer": a_customer, "customers": a_customers, "birthdays": a_birthdays,
+        "customer_orders": a_customer_orders, "gift_vouchers": a_gift_vouchers, "coupons": a_coupons,
+        "loyalty": a_loyalty, "feedback": a_feedback, "leads": a_leads, "walkins": a_walkins,
     }
+    read["question"] = question
     try:
         if intent == "counts":
             out = a_counts(db, read, sc, per, role)
@@ -1080,7 +1414,7 @@ def ask(db, question, role="admin", allowed=None):
                 "interpretation": interp}
 
     timeless = intent in ("pending_payments", "pending_grns", "stock", "stock_rank",
-                          "low_stock", "dead_stock", "counts")
+                          "low_stock", "dead_stock", "counts", "customer", "birthdays")
     return {**out, "question": question, "intent": intent,
             "period": None if timeless else {k: per[k] for k in ("from", "to", "label")},
             "interpretation": interp}
@@ -1103,4 +1437,12 @@ def examples():
         {"q": "Which warehouse has the highest stock value?", "note": "ranked"},
         {"q": "What did people do today?", "note": "audit trail"},
         {"q": "Today's profit", "note": "margin at cost"},
+        {"q": "How many new customers this month?", "note": "CRM · customer book"},
+        {"q": "Pending customer orders", "note": "CRM · orders"},
+        {"q": "Gift vouchers sold this month", "note": "CRM · vouchers"},
+        {"q": "Customer feedback this week", "note": "CRM · ratings"},
+        {"q": "Leads to follow up today", "note": "CRM · leads"},
+        {"q": "Today's walk-ins", "note": "CRM · footfall"},
+        {"q": "Birthdays this week", "note": "CRM · wishes"},
+        {"q": "Loyalty points of 9876543210", "note": "CRM · one customer"},
     ]
