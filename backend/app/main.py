@@ -756,7 +756,8 @@ def _with_store_access(scope):
     from starlette.requests import Request as _Request
 
     name = perms_svc.STORE_HEADER.encode()
-    headers = [(k, v) for k, v in scope.get("headers", []) if k.lower() != name]
+    sso_name = b"x-essa-user"                          # who is signed in — see below
+    headers = [(k, v) for k, v in scope.get("headers", []) if k.lower() not in (name, sso_name)]
     if "/static/" in scope.get("path", ""):
         return dict(scope, headers=headers)            # css, icons: nothing to gate
     # A throwaway copy for reading the cookie: Starlette's Request replaces the
@@ -764,6 +765,7 @@ def _with_store_access(scope):
     # would not be the one the shop receives.
     token = token_from(_Request(dict(scope, headers=list(headers))))
     narrow = False
+    sso = None
     if token:
         try:
             from .database import SessionLocal
@@ -772,11 +774,20 @@ def _with_store_access(scope):
                 user = resolve_token(db, token)
                 narrow = user is not None and perms_svc.store_access(
                     perms_svc.normalise(user.permissions), user.role) == "user"
+                # …and WHO it is, signed, so the shop signs them in without a
+                # second login (Textile Retail Shop/app/essa_sso.py). A Store user
+                # is handed over as the floor's role whatever their Essa role.
+                if user is not None:
+                    from .pos_mount import SSO_KEY
+                    from .services.sso_sign import sign
+                    sso = sign(SSO_KEY, user.username, user.full_name,
+                               "user" if narrow else user.role).encode()
             finally:
                 db.close()
         except Exception:                              # noqa: BLE001
             narrow = True
-    return dict(scope, headers=headers + ([(name, b"user")] if narrow else []))
+    extra = ([(name, b"user")] if narrow else []) + ([(sso_name, sso)] if sso else [])
+    return dict(scope, headers=headers + extra)
 
 
 class _PosMount:

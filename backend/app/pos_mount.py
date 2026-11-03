@@ -23,6 +23,7 @@ swap is over.
 """
 
 import importlib
+import secrets
 import os
 import sys
 from pathlib import Path
@@ -147,6 +148,13 @@ def _isolate_shop_schema() -> None:
     os.environ["SHOP_DB_SCHEMA"] = POS_SCHEMA
 
 
+#: The key that signs WHO is signed in to Essa for the shop (Textile Retail Shop/
+#: app/essa_sso.py), so the frame needs no second login. Made fresh in memory on
+#: every start and never written anywhere: only this process can sign, and a shop
+#: run on its own — which never receives it — ignores the header altogether.
+SSO_KEY = secrets.token_hex(32)
+
+
 def load_pos_app():
     """Import and return the shop's Flask application, or raise.
 
@@ -172,6 +180,7 @@ def load_pos_app():
     try:
         pkg = importlib.import_module("app")        # the shop's package
         flask_app = pkg.create_app()
+        flask_app.config["ESSA_SSO_KEY"] = SSO_KEY
         global _retail_reports
         _retail_reports = importlib.import_module("app.retail_reports")   # mid-swap: the shop's
         # The shop's own name, taken from the STORE the warehouse created rather

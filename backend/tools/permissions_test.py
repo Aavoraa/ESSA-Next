@@ -251,6 +251,37 @@ client.put("/api/users/%d/permissions" % adm_row["id"], headers=head_su, json={}
 eq("back to Admin, the header goes on the very next request",
    shop_sees(token=a_tok["token"]), None)
 
+head("…and who is signed in, so the frame needs no second login")
+import importlib.util as _ilu_sso                                     # noqa: E402
+from backend.app.pos_mount import SSO_KEY                             # noqa: E402
+_sso_spec = _ilu_sso.spec_from_file_location("shop_essa_sso", os.path.join(
+    ROOT, "Textile Retail Shop", "app", "essa_sso.py"))
+SSO = _ilu_sso.module_from_spec(_sso_spec); _sso_spec.loader.exec_module(SSO)
+
+
+def shop_user(token=None, extra=()):
+    """Who the shop would sign in for this request, read the shop's own way."""
+    h = [(b"host", b"essa")] + list(extra)
+    if token:
+        h.append((b"cookie", ("essa_token=%s" % token).encode()))
+    out = _with_store_access({"type": "http", "method": "GET", "path": "/pos/customers/",
+                              "headers": h, "query_string": b""})
+    raw = dict(out["headers"]).get(SSO.HEADER.lower().encode())
+    return SSO.verify(SSO_KEY, raw.decode()) if raw else None
+
+
+who = shop_user(token=su["token"])
+eq("the super admin is handed over by name", (who or {}).get("username"), "superadmin")
+eq("…as a super admin", (who or {}).get("role"), "superadmin")
+eq("a Store user is handed over as the floor's role", (shop_user(token=u_tok["token"]) or {}).get("role"), "user")
+eq("no Essa session hands over nobody", shop_user(), None)
+forged = SSO.sign("not-the-key", "superadmin", "Super Admin", "superadmin")
+eq("a header a client made up is stripped, with no session",
+   shop_user(extra=[(b"x-essa-user", forged.encode())]), None)
+eq("…and replaced by the real one, with one",
+   (shop_user(token=u_tok["token"], extra=[(b"x-essa-user", forged.encode())]) or {}).get("username"), "user")
+eq("a header signed with any other key does not verify", SSO.verify(SSO_KEY, forged), None)
+
 head("what a Store user may open in the shop")
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))), "Textile Retail Shop"))
