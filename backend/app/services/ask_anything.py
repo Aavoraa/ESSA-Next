@@ -46,8 +46,9 @@ from .figures import inr, inr_short, plural, qty as fmt_qty, spoken_inr
 
 #: What each intent answers — the model reads these lines.
 INTENTS = {
-    "sales": "Sales taken at the stores' tills (POS) in a period. Optionally at one warehouse's stores, one store, a floor or a counter, or of a category/product such as 'ladies shirts'.",
+    "sales": "Sales taken at the stores' tills (POS) in a period. Optionally at one warehouse's stores, one store, a floor or a counter, of a category/product such as 'ladies shirts', by one staff member ('how much did Priya sell') or to one customer.",
     "sales_rank": "WHICH warehouse, store, floor, counter, cashier, category, product or payment method sold the MOST (or the least) in a period.",
+    "bills": "The store BILLS themselves, listed — how many and what they came to in a period, optionally billed by one cashier, sold by one salesperson or bought by one customer. 'Bills billed by Priya today', 'Show R Kumar's bills this month'. (Supplier invoices are `invoices`.)",
     "discounts": "Discounts given on store bills in a period — the total, and who (which cashier) gave the most.",
     "profit": "Profit / gross margin on store sales in a period.",
     "purchases": "Goods received through GRN in a period — how many GRNs, how many units and products, and their value. 'How many products were received through GRN today'.",
@@ -80,6 +81,10 @@ INTENTS = {
 NONE = "none"
 GROUPS = ("warehouse", "store", "floor", "counter", "cashier", "staff", "category",
           "product", "payment")
+#: Who a named person is in a question about bills: the one who billed it, the
+#: one who sold it on the floor, the one who bought it — or "" for either of the
+#: first two.
+ROLES = ("cashier", "salesperson", "customer")
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +154,94 @@ def _store_rows(db):
             for s in db.query(models.Store).all()]
 
 
+#: Intents a named person narrows — to the bills they billed, sold or bought.
+_PERSONAL = ("sales", "sales_rank", "bills", "profit")
+_NOT_A_NAME = {
+    "today", "yesterday", "the", "a", "an", "each", "every", "all", "floor", "floors", "counter",
+    "counters", "store", "stores", "shop", "branch", "cashier", "cashiers", "staff", "category",
+    "categories", "product", "products", "payment", "method", "mode", "warehouse", "warehouses",
+    "customer", "customers", "them", "whom", "who", "me", "us", "we", "you", "they", "value",
+    "amount", "people", "someone", "anyone", "everyone", "this", "last", "month", "week", "year",
+    "day", "date", "time", "hour", "bill", "bills", "salesperson", "salesman", "employee",
+    "employees", "name", "number", "upi", "cash", "card", "item", "items", "section", "him", "her",
+    "it", "much", "many", "total", "sales", "sale", "how", "what", "which", "show", "list",
+    "give", "get", "find", "see", "check", "display", "tell", "about", "of", "for", "most",
+    "least", "highest", "lowest", "top", "best", "worst", "more", "less", "billed", "sold",
+    "has", "have", "had", "is", "was", "did", "do", "does", "made", "gave", "given", "took"}
+_NAME = r"([a-z][a-z.']*(?:\s+[a-z][a-z.']*){0,3}?)"
+_NAME_END = (r"(?=\s+(?:today|yesterday|this|last|in|on|at|for|from|between|since|during|till|until|"
+             r"sell|sold|sells|bill|billed|bills|have|has|had|do|did|so|and|with|of|by|to)\b"
+             r"|\s*[?.!,]|\s*$)")
+#: How a question says who — most particular first.
+_PERSON_SAID = (
+    (r"\b(?:sold|served|attended|handled)\s+by\s+", "salesperson"),
+    (r"\b(?:salesperson|salesman|saleswoman|salesgirl)\s+", "salesperson"),
+    (r"\b(?:sold|billed|invoiced|sales?|bills?)\s+to\s+", "customer"),
+    (r"\bbought\s+by\s+", "customer"),
+    (r"\bcustomer\s+", "customer"),
+    (r"\b(?:bills?|invoices?|purchases?|shopping|spend(?:ing)?)\s+(?:of|for)\s+", "customer"),
+    (r"\b(?:billed|invoiced|raised|cut)\s+by\s+", "cashier"),
+    (r"\bcashier\s+", "cashier"),
+    (r"\bby\s+", ""),
+    (r"\b(?:did|has|have|had)\s+", ""),
+    (r"\b(?:sales?|business|billing)\s+(?:of|for)\s+", ""),
+)
+
+
+def _resolve(name, role):
+    """Who a name is at the tills: ("staff", [people], role), ("customer",
+    [customers], "customer") or None. A role said decides; with none, a name that
+    is somebody's WHOLE name wins over one that only starts somebody's — "R Kumar"
+    the customer, not Ravi Kumar at the counter — and staff win a tie."""
+    staff = pos_insights.people_named(name) if role != "customer" else []
+    one, many = None, []
+    if role in ("", "customer") and crm.available():
+        one = crm.find_customer(name)
+        many = [] if one else crm.find_customers_named(name, limit=20)
+    whole = _norm(name)
+    staff_exact = [p for p in staff if whole in (_norm(p["name"]), _norm(p["username"]))]
+    if staff_exact or (staff and not one):
+        return "staff", staff_exact or staff, role
+    if one or many:
+        return "customer", [one] if one else many, "customer"
+    return None
+
+
+def _person_kind(name, role):
+    """The role a name really has at the tills, or None when nobody there has it."""
+    hit = _resolve(name, role)
+    return hit[2] if hit else None
+
+
+def _person_in(t):
+    """(name, role) of the person a question about bills or sales is about — only
+    when somebody at the tills is called that. "Sales by floor" names nobody."""
+    if not pos_insights.available():
+        return "", ""
+    said = [(m.group(1), role) for pat, role in _PERSON_SAID
+            for m in re.finditer(pat + _NAME + _NAME_END, t)]
+    said += [(m.group(1), "") for m in re.finditer(
+        r"\b((?:[a-z]\.?\s+)?[a-z][a-z.]+(?:\s+[a-z][a-z.]+)?)'s\s+(?:bills?|sales|billing|invoices?)\b", t)]
+    unknown = None
+    for name, role in said:
+        words = name.strip(" .'").split()
+        while words and words[-1] in _NOT_A_NAME:
+            words.pop()
+        while words and words[0] in _NOT_A_NAME:
+            words.pop(0)
+        if not words:
+            continue
+        name = " ".join(words)
+        kind = _person_kind(name, role)
+        if kind is not None:
+            return name, kind
+        if role and unknown is None:
+            unknown = (name, role)
+    # "Billed by Xyz" names a person even when nobody is called that — kept, so
+    # the answer says nobody is, rather than quietly answering for everyone.
+    return unknown or ("", "")
+
+
 def _offline(db, question):
     t = f" {question.lower().strip()} "
     today = business_day.today()
@@ -203,6 +296,11 @@ def _offline(db, question):
         intent = "returns"
     elif _has(t, ("in transit", "transfer", "dispatch", "outward", "sent to store", "sent out")):
         intent = "transfers"
+    # Customer bills at the tills — "billed by Priya", "R Kumar's bills". Not
+    # "billing" (that is `sales`), and not a supplier's bill.
+    elif re.search(r"\bbills?\b|\bbilled\b|\binvoiced\b", t) \
+            and not _has(t, ("supplier", "vendor", " grn", "purchase", "bill entry")):
+        intent = "sales_rank" if rank and group else "bills"
     elif _has(t, ("who did", "what did", "activity", "audit", " log ", "who changed",
                   "who posted", "who deleted", "actions by", "what has", "done today")) \
             and not _has(t, _SALES):
@@ -271,17 +369,22 @@ def _offline(db, question):
         if cm2 and cm2.group(1).strip() not in ("the", "a", "this", "that", "all", "my", "our"):
             item = cm2.group(1).strip()
 
-    person = ""
+    person = person_role = ""
     if intent in ("activity", "discounts"):
         pm = re.search(r"\b(?:did|by|has|of)\s+([a-z][a-z.]{1,20})\b(?=\s+(?:do|done|change|post|today|yesterday|this)|\s*[?.!]?\s*$)", t)
         if pm and pm.group(1) not in ("we", "you", "they", "the", "i", "it", "people", "someone", "anyone"):
             person = pm.group(1)
+    if intent in _PERSONAL:
+        person, person_role = _person_in(t)
+        if person and _norm(item) in (_norm(person), f"customer {_norm(person)}"):
+            item = ""                          # "sales of Priya" is a person, not a product
 
     return {
         "intent": intent, "reading": "matched on keywords",
         "date_from": lo or "", "date_to": hi or "",
         "warehouse": wh[0]["name"] if wh else wh_word, "store": st[0]["name"] if st else "",
-        "floor": floor, "counter": counter, "person": person, "item": item,
+        "floor": floor, "counter": counter, "person": person, "person_role": person_role,
+        "item": item,
         "code": code or "", "group_by": ("cashier" if intent == "discounts" and not group else group)
         if intent in ("sales_rank", "stock_rank", "discounts") else "",
         "order": "bottom" if _has(t, _BOTTOM) else ("top" if rank else ""),
@@ -320,6 +423,12 @@ one, else empty. person: a person's name if the question is about someone. item:
 product or category asked about in the person's own words ("ladies shirts"), else empty. \
 code: a document number or tag code when intent is trace. For `customer`, put the \
 mobile number, customer code or loyalty card in code, or the customer's name in person.
+person_role, for sales / sales_rank / bills / profit about one person: "cashier" when they \
+BILLED it ("billed by Priya"), "salesperson" when they SOLD or served it on the floor, \
+"customer" when they BOUGHT it ("R Kumar's bills", "sold to Ravi"), else empty for staff \
+in either role. A question that is only somebody's or something's name ("Priya", "details \
+of AMS Garments") is intent none with that name in person — the system looks it up \
+everywhere.
 4. group_by: only for sales_rank / stock_rank / discounts — what is being ranked.
 5. order: "top" for highest/most/best, "bottom" for lowest/least, else empty.
 6. days: a number of days mentioned (e.g. dead stock "above 90 days"), else empty.
@@ -339,7 +448,9 @@ def _schema():
             "date_from": s("ISO date or empty"), "date_to": s("ISO date or empty"),
             "warehouse": s("Warehouse name or empty"), "store": s("Store name or empty"),
             "floor": s("Store floor name or empty"), "counter": s("POS counter name or empty"),
-            "person": s("Person's name or empty"), "item": s("Product/category words or empty"),
+            "person": s("Person's name or empty"),
+            "person_role": {"type": "string", "enum": [""] + list(ROLES)},
+            "item": s("Product/category words or empty"),
             "code": s("Document number or tag code, or empty"),
             "group_by": {"type": "string", "enum": [""] + list(GROUPS)},
             "order": {"type": "string", "enum": ["", "top", "bottom"]},
@@ -347,8 +458,8 @@ def _schema():
             "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
         },
         "required": ["intent", "reading", "date_from", "date_to", "warehouse", "store",
-                     "floor", "counter", "person", "item", "code", "group_by", "order",
-                     "days", "confidence"],
+                     "floor", "counter", "person", "person_role", "item", "code", "group_by",
+                     "order", "days", "confidence"],
         "additionalProperties": False,
     }
 
@@ -552,7 +663,7 @@ def a_sales(db, read, sc, per):
     n_stores = len([r for r in stores if r["label"] != "(no branch)"])
     n_counters = t.get("counters") if not item else len(
         pos_insights.breakdown(per["start"], per["end"], "counter", sc["at"], item))
-    noun = f"Sales of {item.title()}" if item else "Sales"
+    noun = (f"Sales of {item.title()}" if item else "Sales") + _who_words(sc)
     title = _titled(per["label"], noun)
     if sc["place"]:
         title += f" at {sc['place']}"
@@ -560,7 +671,7 @@ def a_sales(db, read, sc, per):
         line = (f"{title}: {inr(t['net'])} — {plural(t['units'], 'piece')} of "
                 f"{plural(t.get('products', 0), 'product')} on {plural(t['bills'], 'bill')}.")
         speak = f"{title}: {spoken_inr(t['net'])}, {fmt_qty(t['units'])} pieces."
-    elif sc["place"]:
+    elif sc["place"] or sc.get("who"):
         line = f"{title}: {inr(t['net'])} on {plural(t['bills'], 'bill')} — {plural(t['units'], 'unit')}."
         speak = f"{title}: {spoken_inr(t['net'])}."
     else:
@@ -610,7 +721,7 @@ def a_sales_rank(db, read, sc, per):
     pick = rows[-1] if bottom else rows[0]
     total = sum(r["amount"] for r in rows) or 1
     word = "Lowest" if bottom else "Highest"
-    title = f"{word} Sales by {noun} — {per['label']}"
+    title = f"{word} Sales by {noun} — {per['label']}" + (f" ({_who_words(sc).strip()})" if sc.get("who") else "")
     line = f"{word} Sales {_phrase(per['label'])}: {pick['label']} — {inr_short(pick['amount'])}."
     speak = f"{word} sales: {pick['label']}, {spoken_inr(pick['amount'])}."
     others = rows[1] if (not bottom and len(rows) > 1) else (rows[-2] if bottom and len(rows) > 1 else None)
@@ -653,7 +764,7 @@ def a_profit(db, read, sc, per):
     m = pos_insights.margin(per["start"], per["end"], sc["at"], read.get("item") or None)
     if not m.get("available"):
         return _no_pos()
-    title = _titled(per["label"], "Profit")
+    title = _titled(per["label"], "Profit" + _who_words(sc))
     if sc["place"]:
         title += f" at {sc['place']}"
     pct = f"{m['margin_pct']}%" if m["margin_pct"] is not None else "—"
@@ -1031,6 +1142,11 @@ def a_activity(db, read, sc, per, role, allowed):
         users = [{"name": u.full_name or u.username, "username": u.username}
                  for u in db.query(models.User).all()]
         who = _best(read["person"], users) or _best(read["person"], users, key="username")
+        if who is None and pos_insights.available() and pos_insights.people_named(read["person"]):
+            # Not a user here, but somebody at the tills — what they did is their bills.
+            sub = {**read, "person_role": ""}
+            if _who(db, sub, sc):
+                return a_bills(db, sub, sc, per)
     hide = () if rank(role) >= ROLE_RANK["superadmin"] else ("users", "settings")
     f = audit_svc.feed(db, limit=200, username=who["username"] if who else None,
                        date_from=per["from"], date_to=per["to"],
@@ -1050,6 +1166,231 @@ def a_activity(db, read, sc, per, role, allowed):
                 [{"Time": (e["local"] or "").replace("T", " "), "Who": e["who"], "Module": e["module"],
                   "What": e["summary"], "Where": e["warehouse"] or "—"} for e in ev],
                 None, {"tab": "audit"})
+
+
+# ---------------------------------------------------------------------------
+#  One person's bills — who billed, who sold, who bought
+# ---------------------------------------------------------------------------
+_ROLE_WORDS = {"cashier": "billed by", "salesperson": "sold by", "customer": "for", "": "by"}
+
+
+def _who(db, read, sc):
+    """Narrow the bills to the person the question names. Sets sc["who"] and
+    returns it; None when no person was named; False when nobody at the tills
+    — staff or customer — is called that."""
+    name = (read.get("person") or "").strip()
+    role = read.get("person_role") or ""
+    if not name or not pos_insights.available():
+        return None
+    at = dict(sc.get("at") or {})
+    hit = _resolve(name, role)
+    if hit is None:
+        return False
+    kind, found, role = hit
+    names = ", ".join(h["name"] for h in found[:3]) + (" …" if len(found) > 3 else "")
+    if kind == "staff":
+        at[{"cashier": "cashier_ids", "salesperson": "staff_ids"}.get(role, "person_ids")] = \
+            [p["id"] for p in found]
+    else:
+        at["customer_ids"] = [h["id"] for h in found]
+    sc["at"] = at
+    sc["who"] = {"kind": kind, "name": names, "role": role,
+                 "label": f"{_ROLE_WORDS[role]} {names}"}
+    return sc["who"]
+
+
+def _who_words(sc):
+    return f" {sc['who']['label']}" if sc.get("who") else ""
+
+
+def _nobody(name):
+    return _out("Who?", "—", f"Nobody called “{name}” bills, sells or buys at the stores.", ok=False)
+
+
+def a_bills(db, read, sc, per):
+    if not pos_insights.available():
+        return _no_pos()
+    who = sc.get("who")
+    t = pos_insights.totals(per["start"], per["end"], sc["at"])
+    rows = pos_insights.bills(per["start"], per["end"], sc["at"])
+    title = _titled(per["label"], "Bills" + _who_words(sc))
+    if sc["place"]:
+        title += f" at {sc['place']}"
+    cancelled = sum(1 for b in rows if b["status"] == "cancelled")
+    if not t["bills"]:
+        line = f"{title}: none."
+        if who:
+            last = pos_insights.bills(per["start"].replace(year=2000), per["end"], sc["at"], limit=1)
+            if last:
+                line = (f"{title}: none. The last was {last[0]['bill_no']} on "
+                        f"{_local_time(last[0]['at'])} for {inr(last[0]['total'])}.")
+        return _out(title, "0", line, None, [("Cancelled", str(cancelled) if cancelled else None)],
+                    *_bill_table(rows, who), None, {"tab": "central"})
+    live = [b for b in rows if b["status"] != "cancelled"]
+    last = live[0] if live else None
+    line = (f"{title}: {plural(t['bills'], 'bill')} worth {inr(t['gross'])}"
+            + (f", {cancelled} cancelled" if cancelled else "")
+            + (f" — the latest {last['bill_no']} at {_local_time(last['at'])[11:]} for {inr(last['total'])}"
+               + (f" to {last['customer']}" if last["customer"] != "Walk-in" and (not who or who["kind"] != "customer") else "")
+               if last else "") + ".")
+    buyers = {b["phone"] or b["customer"] for b in live if b["customer"] != "Walk-in"}
+    facts = [("Bills", fmt_qty(t["bills"])), ("Billed", inr(t["gross"])),
+             ("Average bill", inr(round(t["gross"] / t["bills"], 2))),
+             ("Discount given", inr(t["discount"]) if t["discount"] else None),
+             ("Returned", inr(t["returns"]) if t["returns"] else None),
+             ("Customers", str(len(buyers)) if who is None or who["kind"] != "customer" else None),
+             ("Cancelled", str(cancelled) if cancelled else None)]
+    note = None
+    if len(rows) >= 300:
+        note = "The latest 300 bills are listed; the figures above count them all."
+    if who and who["kind"] == "staff" and not who["role"]:
+        note = ((note + " ") if note else "") + \
+            f"Bills {who['name']} billed at the counter or sold on the floor."
+    return _out(title, inr(t["gross"]), line,
+                f"{title}: {plural(t['bills'], 'bill')}, {spoken_inr(t['gross'])}.",
+                facts, *_bill_table(rows, who), note, {"tab": "central"})
+
+
+def _bill_table(rows, who):
+    cols = ["Bill", "When", "Store", "Floor", "Counter", "Billed by", "Salesperson",
+            "Customer", "Mobile", "Payment", "Discount", "Total", "Status"]
+    return cols, [{"Bill": b["bill_no"], "When": _local_time(b["at"]), "Store": b["branch"],
+                   "Floor": b["floor"], "Counter": b["counter"], "Billed by": b["cashier"],
+                   "Salesperson": b["staff"], "Customer": b["customer"], "Mobile": b["phone"] or "—",
+                   "Payment": b["method"], "Discount": b["discount"], "Total": b["total"],
+                   "Status": b["status"]} for b in rows]
+
+
+def a_supplier(db, sup, per):
+    """One supplier: what is owed them and what came in from them."""
+    owed = [b for b in cc.outstanding(db) if b["supplier"] == sup.name]
+    total = round(sum(b["outstanding"] for b in owed), 2)
+    grns = (db.query(models.Purchase)
+              .filter(models.Purchase.supplier_id == sup.id, models.Purchase.status == "posted",
+                      models.Purchase.posted_at >= per["start"], models.Purchase.posted_at < per["end"])
+              .order_by(models.Purchase.posted_at.desc()).all())
+    value = round(sum(float(p.grand_total or 0) for p in grns), 2)
+    line = (f"{sup.name}: " + (f"{inr(total)} owed on {plural(len(owed), 'bill')}" if owed else "nothing owed")
+            + f"; {plural(len(grns), 'GRN')} worth {inr(value)} {_phrase(per['label'])}.")
+    return _out(sup.name, inr(total), line, None,
+                [("Outstanding", inr(total)), ("Oldest unpaid (days)",
+                  str(max((b["days"] or 0) for b in owed)) if owed else None),
+                 (_titled(per["label"], "GRNs"), f"{len(grns)} · {inr(value)}"),
+                 ("GSTIN", sup.gstin), ("Phone", sup.phone)],
+                ["Invoice date", "Bill", "Outstanding", "Days"],
+                [{"Invoice date": b["purchase"].invoice_date or "—", "Bill": b["purchase"].grand_total,
+                  "Outstanding": b["outstanding"], "Days": b["days"]} for b in owed],
+                "Supplier payments are company-wide.", {"tab": "payments"})
+
+
+def _starts_words(name, *fields):
+    """Every word of `name` starts a word of the fields — "ams" is AMS Garments,
+    "ram" is not Sriram."""
+    want = re.findall(r"[a-z0-9]+", (name or "").lower())
+    have = re.findall(r"[a-z0-9]+", " ".join(str(f or "") for f in fields).lower())
+    return bool(want) and all(any(h.startswith(w) for h in have) for w in want)
+
+
+_LOOKUP_FILLER = re.compile(
+    r"\b(?:show|me|give|get|details?|info|information|about|who|is|was|find|search|for|tell|"
+    r"the|of|what|on|please|look\s*up|lookup|profile|everything|anything|all|any|today'?s?|"
+    r"yesterday'?s?|this|last|week|month|year|an?|and|do|we|have|named|called|name|"
+    r"history|summary|report|status)\b")
+_HINTS = (("customer", ("customer", "client", "buyer")),
+          ("staff", ("employee", "staff", "cashier", "salesman", "salesperson", "biller", "worker", "user")),
+          ("supplier", ("supplier", "vendor", "party")),
+          ("place", ("store", "shop", "branch", "warehouse", "godown")),
+          ("product", ("product", "item", "design", "sku", "garment")))
+
+
+def _lookup(db, question, read, role, allowed):
+    """A bare name, looked for everywhere in the software: someone who bills or
+    sells at the tills, a customer, a user here, a supplier, a store or warehouse,
+    a product. The first that matches answers; the rest are named beneath it.
+    Returns (intent, answer) or None."""
+    t = f" {question.lower()} "
+    hint = next((k for k, ws in _HINTS if re.search(r"\b(?:" + "|".join(ws) + r")s?\b", t)), None)
+    name = (read.get("person") or read.get("item") or "").strip().lower()
+    if not name:
+        name = re.sub(r"[^a-z0-9.' -]", " ", t)
+        for _, ws in _HINTS:
+            name = re.sub(r"\b(?:" + "|".join(ws) + r")s?\b", " ", name)
+        name = " ".join(_LOOKUP_FILLER.sub(" ", name).split()).strip(" .'-")
+    if len(name) < 3 or len(name.split()) > 4:
+        return None
+    try:
+        base = _scope(db, {}, allowed)
+    except Refused:
+        return None
+    per = _period(read, "today")
+    found = []                       # (kind, what it is, intent, answer(), whole name?)
+
+    if pos_insights.available():
+        staff = pos_insights.people_named(name)
+        if staff:
+            def staff_answer():
+                sc = dict(base)
+                sub = {"person": name, "person_role": ""}
+                return a_bills(db, sub, sc, per) if _who(db, sub, sc) else None
+            found.append(("staff", "at the tills: " + ", ".join(p["name"] for p in staff[:3]),
+                          "bills", staff_answer,
+                          any(name in (_norm(p["name"]), _norm(p["username"])) for p in staff)))
+    if crm.available():
+        one = crm.find_customer(name)
+        many = [] if one else crm.find_customers_named(name)
+        if one or many:
+            found.append(("customer", "customer: " + (one["name"] if one else
+                          ", ".join(h["name"] for h in many[:3])),
+                          "customer", lambda: a_customer(db, {"person": name, "question": question},
+                                                         base, per), bool(one)))
+    at_tills = {_norm(p["name"]) for p in staff} if pos_insights.available() else set()
+    users = [u for u in db.query(models.User).all() if _starts_words(name, u.full_name, u.username)
+             and _norm(u.full_name or u.username) not in at_tills]   # the same person, signed in to both
+    if users:
+        found.append(("staff", "user here: " + ", ".join(u.full_name or u.username for u in users[:3]),
+                      "activity", lambda: a_activity(db, {"person": name}, base, per, role, allowed),
+                      any(name in (_norm(u.full_name), _norm(u.username)) for u in users)))
+    sups = [s for s in db.query(models.Supplier).all()
+            if _starts_words(name, s.name) or any(_starts_words(name, a) for a in (s.aliases or []))]
+    if sups:
+        per_m = _period(read, "month")
+        found.append(("supplier", "supplier: " + ", ".join(s.name for s in sups[:3]),
+                      "pending_payments", lambda: a_supplier(db, sups[0], per_m),
+                      any(_norm(x.name) == name for x in sups)))
+    for kind, rows in (("store", _store_rows(db)), ("warehouse", _warehouse_rows(db))):
+        hit = next((r for r in rows if _starts_words(name, r["name"]) or _norm(r.get("code")) == name), None)
+        if hit:
+            def place_answer(kind=kind, hit=hit):
+                try:
+                    sc = _scope(db, {kind: hit["name"]}, allowed)
+                except Refused as r:
+                    return _out("Not allotted", "—", str(r), ok=False)
+                return a_sales(db, {}, sc, per)
+            found.append(("place", f"{kind}: {hit['name']}", "sales", place_answer,
+                          name in (_norm(hit["name"]), _norm(hit.get("code")))))
+    words = pos_insights.words_of(name)
+    if words:
+        q = db.query(models.Product.id)
+        for w in words:
+            like = f"%{pos_insights._stem(w)}%"
+            q = q.filter((models.Product.description.ilike(like)) | (models.Product.category.ilike(like))
+                         | (models.Product.sku.ilike(like)) | (models.Product.brand.ilike(like)))
+        if q.first():
+            found.append(("product", f"products: “{name}”", "stock",
+                          lambda: a_stock(db, {"item": name}, base, per), False))
+    if not found:
+        return None
+    # What the question said it was comes first, then a whole name over a part of one.
+    found.sort(key=lambda f: (bool(hint) and f[0] != hint, not f[4]))
+    for i, (kind, what, intent, answer, _whole) in enumerate(found):
+        out = answer()
+        if not out or not out.get("ok", True):
+            continue
+        others = [f[1] for j, f in enumerate(found) if j != i]
+        if others:
+            out["note"] = ((out.get("note") or "") + " Also matches — " + " · ".join(others) + ".").strip()
+        return intent, out
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1319,7 +1660,7 @@ _DEFAULT_PERIOD = {"sales": "today", "sales_rank": "today", "discounts": "today"
                    "invoices": "today", "lr": "today",
                    "customers": "month", "customer_orders": "today", "gift_vouchers": "month",
                    "coupons": "month", "loyalty": "month", "feedback": "month", "leads": "month",
-                   "walkins": "today", "birthdays": "today"}
+                   "walkins": "today", "birthdays": "today", "bills": "today"}
 
 
 def ask(db, question, role="admin", allowed=None):
@@ -1336,8 +1677,9 @@ def ask(db, question, role="admin", allowed=None):
               "engine": read.get("engine"), "confidence": read.get("confidence"),
               "degraded": read.get("degraded"),
               "applied": {k: read.get(k) for k in ("date_from", "date_to", "warehouse", "store",
-                                                   "floor", "counter", "person", "item", "code",
-                                                   "group_by", "order", "days") if read.get(k)},
+                                                   "floor", "counter", "person", "person_role",
+                                                   "item", "code", "group_by", "order", "days")
+                          if read.get(k)},
               "notes": []}
 
     # A CRM document number (an order, a gift voucher) is the CRM's to answer,
@@ -1362,18 +1704,13 @@ def ask(db, question, role="admin", allowed=None):
         return {**out, "question": question, "intent": "trace", "interpretation": interp}
 
     if intent == NONE or intent not in INTENTS:
-        # Last try before giving up: a question that is only somebody's name, or
-        # carries a mobile number, is asking about that customer.
-        if crm.available() and len(question.split()) <= 4:
-            hit = crm.find_customer(question)
-            if hit is None:
-                named = crm.find_customers_named(question)
-                if len(named) == 1 and named[0]["phone"]:
-                    hit = crm.find_customer(named[0]["phone"])
-            if hit:
-                interp["intent"] = "customer"
-                interp["reading"] = interp["reading"] or "a customer's name"
-                return {**_profile(hit), "question": question, "intent": "customer", "interpretation": interp}
+        # Last try before giving up: a question that is only a name is asking
+        # about whoever or whatever has it — anywhere in the software.
+        found = _lookup(db, question, read, role, allowed)
+        if found:
+            interp["intent"] = found[0]
+            interp["reading"] = interp["reading"] if interp["engine"] == "model" else "looked the name up everywhere"
+            return {**found[1], "question": question, "intent": found[0], "interpretation": interp}
     if intent == NONE or intent not in INTENTS:
         return {"ok": False, "question": question, "intent": NONE, "title": "Not sure",
                 "line": "I couldn't match that to something I can answer yet — try one of the examples, "
@@ -1386,12 +1723,15 @@ def ask(db, question, role="admin", allowed=None):
         return {"ok": False, "question": question, "intent": intent, "title": "Not allotted",
                 "line": str(r), "interpretation": interp}
     interp["notes"] = sc["notes"]
+    if intent in _PERSONAL and read.get("person") and _who(db, read, sc) is False:
+        return {**_nobody(read["person"]), "question": question, "intent": intent,
+                "interpretation": interp}
 
     per = _period(read, _DEFAULT_PERIOD.get(intent, "today"))
     builders = {
         "sales": a_sales, "sales_rank": a_sales_rank, "discounts": a_discounts,
         "profit": a_profit, "purchases": a_purchases, "payments": a_payments,
-        "invoices": a_invoices, "lr": a_lr,
+        "invoices": a_invoices, "lr": a_lr, "bills": a_bills,
         "pending_payments": a_pending_payments, "pending_grns": a_pending_grns,
         "returns": a_returns, "stock": a_stock, "stock_rank": a_stock_rank,
         "low_stock": a_low_stock, "dead_stock": a_dead_stock, "transfers": a_transfers,
@@ -1412,6 +1752,13 @@ def ask(db, question, role="admin", allowed=None):
                 "line": f"Something went wrong working that out ({type(e).__name__}). "
                         "The figures on the dashboards are unaffected.",
                 "interpretation": interp}
+
+    if intent == "customer" and not out.get("ok", True):
+        # Not a customer — perhaps somebody or something else by that name.
+        found = _lookup(db, question, read, role, allowed)
+        if found:
+            interp["intent"] = found[0]
+            return {**found[1], "question": question, "intent": found[0], "interpretation": interp}
 
     timeless = intent in ("pending_payments", "pending_grns", "stock", "stock_rank",
                           "low_stock", "dead_stock", "counts", "customer", "birthdays")
@@ -1445,4 +1792,8 @@ def examples():
         {"q": "Today's walk-ins", "note": "CRM · footfall"},
         {"q": "Birthdays this week", "note": "CRM · wishes"},
         {"q": "Loyalty points of 9876543210", "note": "CRM · one customer"},
+        {"q": "Bills billed by Priya today", "note": "one cashier's bills"},
+        {"q": "How much did Priya sell this month?", "note": "one person's sales"},
+        {"q": "Show R Kumar's bills this month", "note": "one customer's bills"},
+        {"q": "Priya", "note": "any name — staff, customer, supplier, store, product"},
     ]
