@@ -24,6 +24,7 @@ swap is over.
 
 import importlib
 import secrets
+import time
 import os
 import sys
 from pathlib import Path
@@ -155,6 +156,29 @@ def _isolate_shop_schema() -> None:
 SSO_KEY = secrets.token_hex(32)
 
 
+def create_all_racing(db, attempts=4):
+    """`create_all`, when another instance may be running it at the same moment.
+
+    On serverless several instances start together, and on a database that lacks
+    a table (the first start after a release that adds one) each of them tries
+    to create it. Postgres lets one win and fails the rest — "relation already
+    exists", or the same race lost one step earlier on the table's row type,
+    `pg_type_typname_nsp_index`. Either way the table is there by then, so the
+    answer is to look again: create_all checks each table first, and the retry
+    creates only what is still missing.
+    """
+    from sqlalchemy.exc import IntegrityError, ProgrammingError
+    for attempt in range(attempts):
+        try:
+            db.create_all()
+            return
+        except (IntegrityError, ProgrammingError) as exc:
+            db.session.rollback()
+            if "already exists" not in str(exc) or attempt == attempts - 1:
+                raise
+            time.sleep(0.25 * (attempt + 1))
+
+
 def load_pos_app():
     """Import and return the shop's Flask application, or raise.
 
@@ -196,7 +220,7 @@ def load_pos_app():
         if store_name:
             flask_app.config["SHOP_NAME"] = store_name
         with flask_app.app_context():
-            pkg.db.create_all()                     # first run: build the schema
+            create_all_racing(pkg.db)               # first run: build the schema
             # The shop's categories are the warehouse master's, and its catalogue
             # is the warehouse's items — both kept in step on every start, and
             # both before the seed so a fresh shop seeds against them.

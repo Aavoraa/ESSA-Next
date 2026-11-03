@@ -653,6 +653,13 @@ app.include_router(finance.router)
 _pos_error = None
 _pos_app = None
 _pos_loaded = False
+_pos_failed_at = 0.0
+#: A shop that failed to load is tried again after this long. It used to be kept
+#: failed for the life of the instance — on serverless, until the instance was
+#: recycled — over a cause that is often gone a second later (another instance
+#: creating the same tables, a database that was briefly unreachable).
+POS_RETRY_SECONDS = 20
+_pos_lock = __import__("threading").Lock()
 
 
 @app.on_event("startup")
@@ -700,20 +707,28 @@ def _start_search_sync():
 
 def _pos_asgi():
     """The mounted shop, built on demand and kept for the life of the instance."""
-    global _pos_app, _pos_error, _pos_loaded
-    if _pos_loaded:
+    global _pos_app, _pos_error, _pos_loaded, _pos_failed_at
+    import time as _time
+    if _pos_app is not None:
         return _pos_app
-    _pos_loaded = True
-    try:
-        from .pos_mount import load_pos_app
-        flask_app = load_pos_app()
-        import warnings
-        with warnings.catch_warnings():                # the module warns on import
-            warnings.simplefilter("ignore", DeprecationWarning)
-            from starlette.middleware.wsgi import WSGIMiddleware
-        _pos_app = WSGIMiddleware(flask_app)
-    except Exception as exc:                           # noqa: BLE001 — reported, not raised
-        _pos_app, _pos_error = None, f"{type(exc).__name__}: {exc}"
+    if _pos_loaded and _time.monotonic() - _pos_failed_at < POS_RETRY_SECONDS:
+        return None
+    # One load at a time: it swaps the `app` package for the whole process.
+    with _pos_lock:
+        if _pos_app is not None:
+            return _pos_app
+        _pos_loaded = True
+        try:
+            from .pos_mount import load_pos_app
+            flask_app = load_pos_app()
+            import warnings
+            with warnings.catch_warnings():            # the module warns on import
+                warnings.simplefilter("ignore", DeprecationWarning)
+                from starlette.middleware.wsgi import WSGIMiddleware
+            _pos_app, _pos_error = WSGIMiddleware(flask_app), None
+        except Exception as exc:                       # noqa: BLE001 — reported, not raised
+            _pos_app, _pos_error = None, f"{type(exc).__name__}: {exc}"
+            _pos_failed_at = _time.monotonic()
     return _pos_app
 
 
@@ -727,7 +742,9 @@ def _pos_unavailable_html(rest: str = "") -> str:
             "environment:</p>"
             "<pre style='background:#F2EEEB;padding:12px;border-radius:6px'>"
             "cd backend\n.venv\\Scripts\\activate\npip install -r requirements.txt</pre>"
-            "<p>Then restart the server.</p></body>")
+            "<p>Then restart the server. A failure that was only momentary — another "
+            f"server starting at the same time — is retried by itself within {POS_RETRY_SECONDS} "
+            "seconds: reload this page.</p></body>")
 
 
 def _with_store_access(scope):

@@ -51,9 +51,20 @@ def ensure_column(table, column, ddl_type):
     cols = table_columns(table)
     if not cols or column in cols:
         return False
-    db.session.execute(
-        text(f"ALTER TABLE {_qualified(table)} ADD COLUMN {column} {ddl_type}"))
-    db.session.commit()
+    # Another instance may be adding the same column at the same moment (several
+    # start together on serverless). Postgres can say IF NOT EXISTS; SQLite
+    # cannot, and is one process anyway — but a lost race there still means the
+    # column is now present, which is all this was for.
+    guard = "IF NOT EXISTS " if db.engine.dialect.name == "postgresql" else ""
+    try:
+        db.session.execute(
+            text(f"ALTER TABLE {_qualified(table)} ADD COLUMN {guard}{column} {ddl_type}"))
+        db.session.commit()
+    except Exception:                      # noqa: BLE001 — re-checked below
+        db.session.rollback()
+        if column not in table_columns(table):
+            raise
+        return False
     return True
 
 
