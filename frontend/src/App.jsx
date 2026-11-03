@@ -19155,16 +19155,16 @@ export default function App() {
   if (!authChecked) return <div className="login-wrap"><div className="login-bg" /></div>
   if (!authed) return <LoginScreen onLogin={handleLogin} />
 
-  // The vision key and model are server-wide settings, so opening them is a
-  // super admin's; everyone else still sees whether vision is on, since that
-  // changes how an upload behaves.
-  const engines = [
+  // The vision key and model are server-wide settings, so the engines are a
+  // super admin's to see and set. Everyone below gets no Extraction engines
+  // block at all — not even read-only — and Setup drops from the rail for an
+  // account that has nothing else under it (NavRail).
+  const engines = isSuper ? [
     { key: 'vision', label: 'Vision', icon: 'eye', on: !!providers.claude_vision,
-      title: isSuper ? 'Configure vision extraction' : 'Vision extraction — a super admin configures this',
-      open: isSuper ? () => setShowSettings(true) : null },
+      title: 'Configure vision extraction', open: () => setShowSettings(true) },
     { key: 'ocr', label: 'OCR', icon: 'cpu', on: !!providers.tesseract,
       title: 'Offline OCR extraction engine', open: null },
-  ]
+  ] : []
   return (
     <div className="app">
       {/* 1. The header: what system this is, the switches that change how it

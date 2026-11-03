@@ -653,13 +653,11 @@ app.include_router(finance.router)
 _pos_error = None
 _pos_app = None
 _pos_loaded = False
+#: When the last attempt failed. A failure used to be kept for the life of the
+#: instance, so one passing error (another instance creating the same table at
+#: the same moment) left that instance's POS dead until it was restarted.
 _pos_failed_at = 0.0
-#: A shop that failed to load is tried again after this long. It used to be kept
-#: failed for the life of the instance — on serverless, until the instance was
-#: recycled — over a cause that is often gone a second later (another instance
-#: creating the same tables, a database that was briefly unreachable).
-POS_RETRY_SECONDS = 20
-_pos_lock = __import__("threading").Lock()
+_POS_RETRY_SECONDS = 20
 
 
 @app.on_event("startup")
@@ -708,27 +706,22 @@ def _start_search_sync():
 def _pos_asgi():
     """The mounted shop, built on demand and kept for the life of the instance."""
     global _pos_app, _pos_error, _pos_loaded, _pos_failed_at
-    import time as _time
-    if _pos_app is not None:
+    import time
+    if _pos_loaded and (_pos_app is not None
+                        or time.monotonic() - _pos_failed_at < _POS_RETRY_SECONDS):
         return _pos_app
-    if _pos_loaded and _time.monotonic() - _pos_failed_at < POS_RETRY_SECONDS:
-        return None
-    # One load at a time: it swaps the `app` package for the whole process.
-    with _pos_lock:
-        if _pos_app is not None:
-            return _pos_app
-        _pos_loaded = True
-        try:
-            from .pos_mount import load_pos_app
-            flask_app = load_pos_app()
-            import warnings
-            with warnings.catch_warnings():            # the module warns on import
-                warnings.simplefilter("ignore", DeprecationWarning)
-                from starlette.middleware.wsgi import WSGIMiddleware
-            _pos_app, _pos_error = WSGIMiddleware(flask_app), None
-        except Exception as exc:                       # noqa: BLE001 — reported, not raised
-            _pos_app, _pos_error = None, f"{type(exc).__name__}: {exc}"
-            _pos_failed_at = _time.monotonic()
+    _pos_loaded = True
+    try:
+        from .pos_mount import load_pos_app
+        flask_app = load_pos_app()
+        import warnings
+        with warnings.catch_warnings():                # the module warns on import
+            warnings.simplefilter("ignore", DeprecationWarning)
+            from starlette.middleware.wsgi import WSGIMiddleware
+        _pos_app = WSGIMiddleware(flask_app)
+    except Exception as exc:                           # noqa: BLE001 — reported, not raised
+        _pos_app, _pos_error = None, f"{type(exc).__name__}: {exc}"
+        _pos_failed_at = time.monotonic()
     return _pos_app
 
 
@@ -737,14 +730,14 @@ def _pos_unavailable_html(rest: str = "") -> str:
     return ("<body style=\"font:14px/1.6 system-ui;padding:32px;color:#33261F\">"
             "<h2 style='margin:0 0 8px'>POS is not loaded</h2>"
             f"<p>{_pos_error}</p>"
+            f"<p>It is tried again on the next visit after {_POS_RETRY_SECONDS} seconds — "
+            "a passing database error clears itself on a refresh.</p>"
             "<p>The shop lives in the <b>Textile Retail Shop</b> folder beside "
             "this project and needs its Python packages in the backend "
             "environment:</p>"
             "<pre style='background:#F2EEEB;padding:12px;border-radius:6px'>"
             "cd backend\n.venv\\Scripts\\activate\npip install -r requirements.txt</pre>"
-            "<p>Then restart the server. A failure that was only momentary — another "
-            f"server starting at the same time — is retried by itself within {POS_RETRY_SECONDS} "
-            "seconds: reload this page.</p></body>")
+            "<p>Then restart the server.</p></body>")
 
 
 def _with_store_access(scope):
@@ -772,9 +765,16 @@ def _with_store_access(scope):
     from .services.users import resolve_token
     from starlette.requests import Request as _Request
 
+    from urllib.parse import quote
+    from . import pos_mount
+
     name = perms_svc.STORE_HEADER.encode()
-    sso_name = b"x-essa-user"                          # who is signed in — see below
-    headers = [(k, v) for k, v in scope.get("headers", []) if k.lower() not in (name, sso_name)]
+    # The Essa account, for the shop to sign in as (see the shop's app/sso). Any
+    # copy a browser sent is stripped with the access header, whatever follows.
+    sso_key = pos_mount.SSO_KEY_HEADER.encode()
+    sso_user = pos_mount.SSO_USER_HEADER.encode()
+    ours = {name, sso_key, sso_user}
+    headers = [(k, v) for k, v in scope.get("headers", []) if k.lower() not in ours]
     if "/static/" in scope.get("path", ""):
         return dict(scope, headers=headers)            # css, icons: nothing to gate
     # A throwaway copy for reading the cookie: Starlette's Request replaces the
@@ -782,7 +782,7 @@ def _with_store_access(scope):
     # would not be the one the shop receives.
     token = token_from(_Request(dict(scope, headers=list(headers))))
     narrow = False
-    sso = None
+    who = None
     if token:
         try:
             from .database import SessionLocal
@@ -791,19 +791,16 @@ def _with_store_access(scope):
                 user = resolve_token(db, token)
                 narrow = user is not None and perms_svc.store_access(
                     perms_svc.normalise(user.permissions), user.role) == "user"
-                # …and WHO it is, signed, so the shop signs them in without a
-                # second login (Textile Retail Shop/app/essa_sso.py). A Store user
-                # is handed over as the floor's role whatever their Essa role.
                 if user is not None:
-                    from .pos_mount import SSO_KEY
-                    from .services.sso_sign import sign
-                    sso = sign(SSO_KEY, user.username, user.full_name,
-                               "user" if narrow else user.role).encode()
+                    who = "|".join(quote(x or "", safe="") for x in
+                                   (user.username, user.role, user.full_name))
             finally:
                 db.close()
         except Exception:                              # noqa: BLE001
             narrow = True
-    extra = ([(name, b"user")] if narrow else []) + ([(sso_name, sso)] if sso else [])
+    extra = [(name, b"user")] if narrow else []
+    if who:
+        extra += [(sso_key, pos_mount.SSO_KEY.encode()), (sso_user, who.encode())]
     return dict(scope, headers=headers + extra)
 
 

@@ -219,8 +219,7 @@ def create_app(config_class=Config):
     # in the handler would reach for the wrong package. create_app runs while the
     # name is still ours (see backend/app/pos_mount.py), so the module objects
     # captured now stay correct for the life of the process.
-    from app import dbpatch, essa_sso, modules, warehouse_items, places as places_mod
-    from app.models import Attendance
+    from app import dbpatch, modules, warehouse_items, places as places_mod, sso
 
     @app.before_request
     def refresh_from_warehouse():
@@ -242,39 +241,20 @@ def create_app(config_class=Config):
             app.logger.warning("warehouse refresh failed", exc_info=True)
 
     @app.before_request
-    def _essa_sign_in():
-        """Inside the Essa web app, the person signed in to Essa is signed in here.
+    def _sign_in_from_essa():
+        """Inside Essa, the Essa account IS the Store login — see app/sso.
 
-        Only when mounted: the mount gives the shop `ESSA_SSO_KEY` and signs a
-        header with it (see app/essa_sso.py). Run on its own the shop has no key,
-        and its login screen is the only way in, exactly as before. Someone who
-        came in this way is signed out again by the first request that arrives
-        without an Essa session, so leaving Essa leaves the till too.
-
-        First, so every hook and view after it sees the person signed in.
-        """
-        key = app.config.get("ESSA_SSO_KEY")
-        if not key or request.endpoint == "static":
+        After the warehouse refresh (which patches the schema the users table
+        is read from) and before the access gate, which narrows whoever this
+        signs in. Static files need no one."""
+        if request.endpoint == "static":
             return
-        from flask import session
-        from flask_login import current_user, login_user, logout_user
-        who = essa_sso.verify(key, request.headers.get(essa_sso.HEADER))
-        if who is None:
-            if session.get(essa_sso.SESSION_FLAG) and current_user.is_authenticated:
-                logout_user()
-                session.pop(essa_sso.SESSION_FLAG, None)
-            return
-        if current_user.is_authenticated and current_user.username == who["username"]:
-            return
-        user = essa_sso.account_for(db, User, who)
-        if user is None:                     # switched off in the shop: its login decides
-            return
-        login_user(user)
-        session[essa_sso.SESSION_FLAG] = True
-        # the same attendance check-in the login form makes
-        if not Attendance.query.filter_by(user_id=user.id, check_out=None).first():
-            db.session.add(Attendance(user_id=user.id))
-            db.session.commit()
+        try:
+            sso.sign_in(request, db, User)
+        except Exception:
+            # the shop's own login page is the fallback, never a 500
+            db.session.rollback()
+            app.logger.warning("Essa sign-in to the Store failed", exc_info=True)
 
     @app.before_request
     def _capture_warehouse_scope():
@@ -340,6 +320,9 @@ def create_app(config_class=Config):
         return {
             "SHOP_MODULES": modules.menu(current_user, restricted=store_user, endpoint=request.endpoint),
             "STORE_USER": store_user,
+            # signed in through Essa: its own Logout would only sign straight
+            # back in, so the menu leaves it out (base.html)
+            "ESSA_SIGNED_IN": sso.essa_account(request) is not None,
             "CURRENT_MODULE": modules.current(request.endpoint),
             "SHOP_NAME": app.config["SHOP_NAME"],
             "SHOP_ADDRESS": app.config["SHOP_ADDRESS"],

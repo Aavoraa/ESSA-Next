@@ -82,6 +82,10 @@
           </ul>
         </li>
       </ul>
+      {# Inside Essa the account is Essa's, and Essa's own header already says who
+         is signed in — a second name chip in the frame only repeated it, and it
+         had no Logout to offer (app/sso). A Store opened on its own keeps it. #}
+      {% if not ESSA_SIGNED_IN %}
       <ul class="navbar-nav align-items-lg-center">
         <li class="nav-item dropdown">
           <a class="nav-link user-chip dropdown-toggle" href="#" data-bs-toggle="dropdown" aria-expanded="false"
@@ -98,6 +102,7 @@
           </ul>
         </li>
       </ul>
+      {% endif %}
     </div>
   </div>
 </nav>

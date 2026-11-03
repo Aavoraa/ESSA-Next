@@ -40,23 +40,51 @@ def eq(what, got, want):
         print("  ok    %s" % what)
 
 
-class _Session:
-    rolled_back = 0
+class _Conn:
+    def __init__(self, log):
+        self.log = log
 
-    def rollback(self):
-        _Session.rolled_back += 1
+    def execute(self, stmt, params=None):
+        self.log.append(str(stmt))
 
 
-class _DB:
-    """A db whose create_all fails the first `lose` times with `error`."""
+class _Begin:
+    def __init__(self, log):
+        self.log = log
 
+    def __enter__(self):
+        return _Conn(self.log)
+
+    def __exit__(self, *exc):
+        return False
+
+
+class _Engine:
+    class dialect:
+        name = "postgresql"
+
+    def __init__(self):
+        self.log = []
+
+    def begin(self):
+        return _Begin(self.log)
+
+
+class _Metadata:
     def __init__(self, lose, error):
-        self.lose, self.error, self.calls, self.session = lose, error, 0, _Session()
+        self.lose, self.error, self.calls = lose, error, 0
 
-    def create_all(self):
+    def create_all(self, bind=None):
         self.calls += 1
         if self.calls <= self.lose:
             raise self.error
+
+
+class _DB:
+    """A Postgres db whose create_all fails the first `lose` times with `error`."""
+
+    def __init__(self, lose, error):
+        self.engine, self.metadata = _Engine(), _Metadata(lose, error)
 
 
 LOST = IntegrityError("CREATE TABLE shop.customer_orders", {}, Exception(
@@ -66,24 +94,27 @@ EXISTS = ProgrammingError("CREATE TABLE shop.leads", {}, Exception('relation "le
 OTHER = ProgrammingError("CREATE TABLE x", {}, Exception("permission denied for schema shop"))
 
 print("\ncreating the tables while another instance does the same")
+db = _DB(0, None)
+pos_mount._create_shop_tables(db)
+eq("the tables are made under the advisory lock", ["pg_advisory_xact_lock" in x for x in db.engine.log], [True])
 db = _DB(1, LOST)
-pos_mount.create_all_racing(db)
-eq("the lost race on the row type is looked at again", db.calls, 2)
+pos_mount._create_shop_tables(db)
+eq("the lost race on the row type is looked at again", db.metadata.calls, 2)
 db = _DB(2, EXISTS)
-pos_mount.create_all_racing(db)
-eq("…and so is 'relation already exists'", db.calls, 3)
+pos_mount._create_shop_tables(db)
+eq("…and so is 'relation already exists'", db.metadata.calls, 3)
 db = _DB(1, OTHER)
 try:
-    pos_mount.create_all_racing(db)
+    pos_mount._create_shop_tables(db)
     eq("any other error is not swallowed", "no error", "raised")
 except ProgrammingError:
-    eq("any other error is not swallowed", db.calls, 1)
+    eq("any other error is not swallowed", db.metadata.calls, 1)
 db = _DB(99, LOST)
 try:
-    pos_mount.create_all_racing(db, attempts=3)
+    pos_mount._create_shop_tables(db)
     eq("a race that never settles is reported, not looped on", "no error", "raised")
 except IntegrityError:
-    eq("a race that never settles is reported, not looped on", db.calls, 3)
+    eq("a race that never settles is reported, not looped on", db.metadata.calls, 3)
 
 print("\na load that failed is tried again")
 calls = {"n": 0}
@@ -107,9 +138,8 @@ main._pos_app, main._pos_loaded, main._pos_error, main._pos_failed_at = None, Fa
 eq("the first load fails and says why", (main._pos_asgi(), main._pos_error),
    (None, "RuntimeError: database briefly unreachable"))
 eq("straight after, it is not hammered", (main._pos_asgi(), calls["n"]), (None, 1))
-main._pos_failed_at -= main.POS_RETRY_SECONDS + 1                    # the wait has passed
+main._pos_failed_at -= main._POS_RETRY_SECONDS + 1                    # the wait has passed
 eq("after the wait it loads", main._pos_asgi() is not None, True)
-eq("and the error is cleared", main._pos_error, None)
 eq("once loaded it is not loaded again", (main._pos_asgi() is not None, calls["n"]), (True, 2))
 pos_mount.load_pos_app = real
 

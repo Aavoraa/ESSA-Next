@@ -23,9 +23,8 @@ swap is over.
 """
 
 import importlib
-import secrets
-import time
 import os
+import secrets
 import sys
 from pathlib import Path
 
@@ -149,34 +148,53 @@ def _isolate_shop_schema() -> None:
     os.environ["SHOP_DB_SCHEMA"] = POS_SCHEMA
 
 
-#: The key that signs WHO is signed in to Essa for the shop (Textile Retail Shop/
-#: app/essa_sso.py), so the frame needs no second login. Made fresh in memory on
-#: every start and never written anywhere: only this process can sign, and a shop
-#: run on its own — which never receives it — ignores the header altogether.
-SSO_KEY = secrets.token_hex(32)
+#: Proves a request came through this mount. The Store signs in whoever is
+#: signed in to Essa (the mount names them in a header — main._with_store_access),
+#: and it must only believe that header from here: the mount strips any copy a
+#: browser sent, but a shop reached some other way would not. So the mount sends
+#: this key with the name and the shop checks it. Made fresh per process — the
+#: mount and the shop it loads always live in the same one — and never stored.
+SSO_KEY = secrets.token_urlsafe(32)
+SSO_KEY_HEADER = "x-essa-sso-key"
+SSO_USER_HEADER = "x-essa-store-user"
+
+#: The key of the Postgres advisory lock the shop's CREATE TABLEs run under. Any
+#: fixed number does; this one spells "ESSA".
+_SCHEMA_LOCK = 0x45535341
 
 
-def create_all_racing(db, attempts=4):
-    """`create_all`, when another instance may be running it at the same moment.
+def _create_shop_tables(db) -> None:
+    """`create_all` for the shop, safe when several instances start at once.
 
-    On serverless several instances start together, and on a database that lacks
-    a table (the first start after a release that adds one) each of them tries
-    to create it. Postgres lets one win and fails the rest — "relation already
-    exists", or the same race lost one step earlier on the table's row type,
-    `pg_type_typname_nsp_index`. Either way the table is there by then, so the
-    answer is to look again: create_all checks each table first, and the retry
-    creates only what is still missing.
+    On a serverless deployment every cold instance builds the shop on its first
+    /pos request, so two of them can reach `create_all` in the same second. Each
+    checks that a new table (customer_orders, the day it shipped) is missing,
+    both issue CREATE TABLE, and the second dies on Postgres's own catalogue —
+    `duplicate key value violates unique constraint "pg_type_typname_nsp_index"`
+    — which took the whole POS down on that instance.
+
+    So the check-and-create runs inside one transaction holding an advisory
+    lock: the second instance waits, then finds the table already there and
+    creates nothing. The lock goes with the transaction. "Already exists" is
+    still retried, for an instance running code from before this lock that does
+    not take it. SQLite has no such race — one file, one process — and is left
+    to `create_all` as before.
     """
+    engine = db.engine
+    if engine.dialect.name != "postgresql":
+        db.create_all()
+        return
+    from sqlalchemy import text
     from sqlalchemy.exc import IntegrityError, ProgrammingError
-    for attempt in range(attempts):
+    for attempt in range(3):
         try:
-            db.create_all()
+            with engine.begin() as conn:
+                conn.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _SCHEMA_LOCK})
+                db.metadata.create_all(bind=conn)
             return
         except (IntegrityError, ProgrammingError) as exc:
-            db.session.rollback()
-            if "already exists" not in str(exc) or attempt == attempts - 1:
+            if attempt == 2 or "already exists" not in str(exc):
                 raise
-            time.sleep(0.25 * (attempt + 1))
 
 
 def load_pos_app():
@@ -196,15 +214,16 @@ def load_pos_app():
     store_name = _single_store_name()
 
     _isolate_shop_schema()
+    # read by the shop's create_app, so only a request carrying it is believed
+    os.environ["ESSA_STORE_SSO_KEY"] = SSO_KEY
 
-    ours = {k: v for k, v in sys.modules.items() if _is_ours(k)}
+    ours ={k: v for k, v in sys.modules.items() if _is_ours(k)}
     for name in ours:
         del sys.modules[name]
     sys.path.insert(0, str(POS_DIR))
     try:
         pkg = importlib.import_module("app")        # the shop's package
         flask_app = pkg.create_app()
-        flask_app.config["ESSA_SSO_KEY"] = SSO_KEY
         global _retail_reports
         _retail_reports = importlib.import_module("app.retail_reports")   # mid-swap: the shop's
         # The shop's own name, taken from the STORE the warehouse created rather
@@ -220,7 +239,7 @@ def load_pos_app():
         if store_name:
             flask_app.config["SHOP_NAME"] = store_name
         with flask_app.app_context():
-            create_all_racing(pkg.db)               # first run: build the schema
+            _create_shop_tables(pkg.db)             # first run: build the schema
             # The shop's categories are the warehouse master's, and its catalogue
             # is the warehouse's items — both kept in step on every start, and
             # both before the seed so a fresh shop seeds against them.
