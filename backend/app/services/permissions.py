@@ -72,6 +72,10 @@ SCREENS = [
     ("deadstock",  "Dead Stock & Clearance", "Office", "admin"),
     ("returns",    "Returns / Debit Notes", "Office", "admin"),
     ("payments",   "Payments", "Office", "admin"),
+    # Every Finance screen — ledgers, vouchers, the statements, Tally — is one
+    # grant: they are one set of books, and a statement is only as right as
+    # the vouchers someone could or could not key.
+    ("finance",    "Finance", "Office", "admin"),
     ("reports",    "Reports", "Office", "admin"),
     ("suppliers",  "Suppliers", "Setup", "admin"),
     ("masters",    "Masters", "Setup", "admin"),

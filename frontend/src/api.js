@@ -623,6 +623,21 @@ export const api = {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then(J),
   supplierLedger: (id) => fetch(`/api/payments/supplier/${id}/ledger`).then(J),
 
+  // finance — one pair of calls for every Finance screen. `params` drops blank
+  // values and joins arrays with commas, which is what the router's lists read.
+  finGet: (path, params) => {
+    const qs = new URLSearchParams()
+    Object.entries(params || {}).forEach(([k, v]) => {
+      if (v == null || v === '' || (Array.isArray(v) && !v.length)) return
+      qs.set(k, Array.isArray(v) ? v.join(',') : v)
+    })
+    const s = qs.toString()
+    return fetch(`/api/finance/${path}${s ? '?' + s : ''}`).then(J)
+  },
+  finSend: (method, path, body) => fetch(`/api/finance/${path}`, {
+    method, headers: { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body) }).then(J),
+
   // purchase returns
   listReturns: () => fetch('/api/returns').then(J),
   getReturn: (id) => fetch(`/api/returns/${id}`).then(J),

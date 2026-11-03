@@ -1,6 +1,7 @@
 import React, { useEffect, useLayoutEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { api, session, warehouse, setUnauthorizedHandler, swr, readCache } from './api.js'
 import { parseDictation, coerceSpoken, dictationTargets } from './voicefill.js'
+import Finance, { FIN_SCREENS, FIN_REPORT_KEYS } from './Finance.jsx'
 
 // ---------- helpers ----------
 const num = (v) => (v === '' || v == null ? null : isNaN(+v) ? v : +v)
@@ -6574,7 +6575,7 @@ const reportMemoPut = (mk, v) => {
   }
 }
 
-function Reports() {
+function Reports({ toast = () => {}, finance = false }) {
   const [cat, setCat] = useState([])
   const [groups, setGroups] = useState([])
   const [key, setKey] = useState(null)
@@ -6593,6 +6594,12 @@ function Reports() {
   // the warehouse's and shows the one picked.
   const [store, setStore] = useState({ available: false, groups: [], reports: [] })
   const [storeKey, setStoreKey] = useState(null)
+  // The books' reports (Finance.jsx) — trial balance, P&L, balance sheet and
+  // the rest — listed here too, so every register in the business is one list.
+  // Drawn by the Finance screen itself, so they read exactly as they do there.
+  // Only for an account that may open Finance: the server refuses it otherwise.
+  const finReports = finance ? FIN_REPORT_KEYS.map((k) => FIN_SCREENS.find(([x]) => x === k)).filter(Boolean) : []
+  const [finKey, setFinKey] = useState(null)
   useEffect(() => {
     swr(() => api.storeReportCatalogue(), setStore).catch(() => {})
     swr(() => api.reportGroups(), setGroups).catch(() => {})
@@ -6627,7 +6634,7 @@ function Reports() {
   // Picking a report by hand, or touching a filter, means the question no longer
   // describes what is on screen — so the reading goes rather than sitting there
   // captioning a table it no longer refers to.
-  const pick = (k) => { setStoreKey(null); setKey(k); setRep(null); setQ(''); setAsked(null); load(k, filters) }
+  const pick = (k) => { setStoreKey(null); setFinKey(null); setKey(k); setRep(null); setQ(''); setAsked(null); load(k, filters) }
   // Store reports opened here stay loaded — each is the shop's own page in a
   // frame, and re-opening one used to run the report again from the start.
   // The last STORE_KEEP are kept, most recently viewed first; ↻ reloads one.
@@ -6639,8 +6646,9 @@ function Reports() {
   // makes the browser load it again, which is the very thing this avoids. How
   // recently each was viewed is kept apart, and only decides which one goes.
   const storeSeen = useRef({})
+  const pickFin = (k) => { setFinKey(k); setStoreKey(null); setAsked(null) }
   const pickStore = (k) => {
-    setStoreKey(k); setAsked(null)
+    setStoreKey(k); setFinKey(null); setAsked(null)
     storeSeen.current[k] = Date.now()
     setStoreKept((list) => {
       if (list.includes(k)) return list
@@ -6731,13 +6739,14 @@ function Reports() {
   // one holding the report on screen until another is picked. A search shows
   // every group's matches, under their group names, since the matches are what
   // is being looked for.
-  const curGroup = storeKey ? 'store:' + (store.reports.find((r) => r.key === storeKey)?.group || '')
+  const curGroup = finKey ? 'finance' : storeKey ? 'store:' + (store.reports.find((r) => r.key === storeKey)?.group || '')
     : (cat.find((r) => r.key === key)?.group || '')
   const [openGrp, setOpenGrp] = useState(null)
   const grpChoices = [
     ...order.filter((g) => grouped[g.key]?.length).map((g) => ({ key: g.key, name: g.name, n: grouped[g.key].length })),
     ...store.groups.map((g) => ({ key: 'store:' + g.key, name: 'Store · ' + g.name,
       n: store.reports.filter((r) => r.group === g.key).length })).filter((g) => g.n),
+    ...(finReports.length ? [{ key: 'finance', name: 'Finance Reports', n: finReports.length }] : []),
   ]
   const shownGrp = (openGrp && grpChoices.some((g) => g.key === openGrp)) ? openGrp
     : (grpChoices.some((g) => g.key === curGroup) ? curGroup : grpChoices[0]?.key)
@@ -6749,7 +6758,7 @@ function Reports() {
   return (
     <div className="body">
       <Sidebar id="reports" label="Reports">
-        <div className="head"><h3>Reports · {cat.length + store.reports.length}</h3></div>
+        <div className="head"><h3>Reports · {cat.length + store.reports.length + finReports.length}</h3></div>
         <SearchBox value={rq} onChange={setRq} placeholder="Search reports…" />
         {!rqn && (
           <select className="rep-pick" value={shownGrp || ''} aria-label="Report group"
@@ -6765,9 +6774,9 @@ function Reports() {
                 // A question nothing answered leaves no report on screen, so
                 // nothing in this list is highlighted either — a highlight with
                 // no table next to it reads as "this is what you are looking at".
-                <div key={r.key} className={'doc-row' + (key === r.key && !miss && !storeKey ? ' sel' : '')}
+                <div key={r.key} className={'doc-row' + (key === r.key && !miss && !storeKey && !finKey ? ' sel' : '')}
                   style={{ padding: '8px 14px' }} onClick={() => pick(r.key)}>
-                  <div className="t" style={{ fontWeight: key === r.key && !miss && !storeKey ? 700 : 400 }}>{r.name}</div>
+                  <div className="t" style={{ fontWeight: key === r.key && !miss && !storeKey && !finKey ? 700 : 400 }}>{r.name}</div>
                 </div>
               ))}
             </div>
@@ -6794,10 +6803,30 @@ function Reports() {
               </div>
             )
           })}
+          {(() => {
+            const list = finReports.filter(([, label]) => !rqn || label.toLowerCase().includes(rqn))
+            if (!list.length || !isOpen('finance')) return null
+            return (
+              <div key="finance">
+                {rqn ? grpHead('finance', 'Finance Reports', list.length) : (
+                  <div style={{ padding: '14px 14px 2px', fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
+                    letterSpacing: '.5px', borderTop: '1px solid var(--line)', marginTop: 8 }}>
+                    Finance reports <span style={{ opacity: 0.6, fontWeight: 400 }}>· from the books</span></div>
+                )}
+                {list.map(([k, label]) => (
+                  <div key={k} className={'doc-row' + (finKey === k ? ' sel' : '')}
+                    style={{ padding: '8px 14px' }} onClick={() => pickFin(k)}>
+                    <div className="t" style={{ fontWeight: finKey === k ? 700 : 400 }}>{label}</div>
+                  </div>
+                ))}
+              </div>
+            )
+          })()}
         </div>
       </Sidebar>
+      {finKey && <Finance key={finKey} screen={finKey} toast={toast} />}
       {storeKept.length > 0 && (
-        <div style={{ flex: 1, display: storeKey ? 'flex' : 'none', flexDirection: 'column', minHeight: 0 }}>
+        <div style={{ flex: 1, display: storeKey && !finKey ? 'flex' : 'none', flexDirection: 'column', minHeight: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px var(--gutter)', borderBottom: '1px solid var(--line)' }}>
             <h2 style={{ margin: 0 }}>{storeEntry?.label || 'Store report'}</h2>
             <span className="small">{storeEntry?.group_label} · run by the Store
@@ -6820,7 +6849,7 @@ function Reports() {
           ))}
         </div>
       )}
-      {!storeKey && (
+      {!storeKey && !finKey && (
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
         <AskBar value={ask} onChange={setAsk} onAsk={runAsk} busy={asking}
           engine={askMeta?.engine} />
@@ -16792,7 +16821,11 @@ const IN_STOCK_AUDIT = { physical_audit: 'qty' }
 
 //: The whole company-level menu. Anything not here needs a warehouse first.
 const COMPANY_LEVEL = new Set(['command', 'audit', 'central', 'locator', 'reports',
-                               'locations', 'users'])
+                               'locations', 'users',
+                               // the books are company-wide, and so are supplier
+                               // payments (services/scope.py): one bank account
+                               // pays every warehouse's bills
+                               'payments', ...FIN_SCREENS.map(([k]) => k)])
 
 //: Four ranked roles — services/users.py holds the same four, and everything is
 //: compared by RANK so the top one inherits every screen below it.
@@ -16857,7 +16890,10 @@ const MODULES = [
   { key: 'outward', icon: '📤', label: 'Stock Outward', blurb: 'Dispatch stock to a shop or another godown' },
   { key: 'inward', icon: '📥', label: 'Stock Inward', blurb: 'Accept a dispatched transfer, line by line' },
   { key: 'returns', icon: '↩', label: 'Returns', blurb: 'Debit notes raised against a posted GRN', min: 'admin' },
-  { key: 'payments', icon: '₹', label: 'Payments', blurb: 'Settle supplier bills and read the ledger', min: 'admin' },
+  { key: 'payments', icon: '₹', label: 'Supplier Payment', blurb: 'Settle supplier bills and read the ledger', min: 'admin' },
+  // The books (Finance.jsx). One grant covers them all — `perm` names it — because
+  // they are one set of books: a statement is only as right as the vouchers.
+  ...FIN_SCREENS.map(([key, label, blurb]) => ({ key, icon: '₹', label, blurb, min: 'admin', perm: 'finance' })),
   { key: 'reports', icon: '📊', label: 'Reports', blurb: 'Every register, filtered and exportable', min: 'admin' },
   { key: 'suppliers', icon: '🏭', label: 'Suppliers', blurb: 'Supplier master and trained invoice formats', min: 'admin' },
   { key: 'masters', icon: '⚙', label: 'Masters', blurb: 'Categories, agents, transporters and the dropdown lists', min: 'admin' },
@@ -17124,6 +17160,7 @@ const NAV_ICON = {
   'pos:feedback_questions': 'help', 'pos:feedback_report': 'cliplist', 'pos:feedback_form': 'listchecks',
   'pos:customer_divert': 'signpost', 'pos:leads': 'userplus', 'pos:self_registration': 'qr',
   'ws:central': 'grid', 'ws:warehouse': 'building', 'ws:store': 'store',
+  ...Object.fromEntries(FIN_SCREENS.map(([k, , , icon]) => [k, icon])),
 }
 
 // Two letters for the avatar: the initials of a two-word name, or the first two
@@ -17270,6 +17307,7 @@ const NAV_RAIL = {
     { key: 'home', label: 'Home', icon: 'dashboard', screens: ['command', 'central', 'pickwh'] },
     { key: 'stock', label: 'Stock', icon: 'boxes', screens: ['locator'] },
     { key: 'crm', label: 'CRM', icon: 'crm', screens: CRM_SCREENS },
+    { key: 'finance', label: 'Finance', icon: 'rupee', screens: ['payments', ...FIN_SCREENS.map(([k]) => k)] },
     { key: 'reports', label: 'Reports', icon: 'trending', screens: ['reports', 'audit'] },
     { key: 'setup', label: 'Setup', icon: 'sliders', screens: ['locations', 'users'] },
   ],
@@ -17281,6 +17319,9 @@ const NAV_RAIL = {
       screens: ['inventory', 'locator', 'stock_audit', 'physical_audit', 'pricing', 'deadstock'] },
     { key: 'transfers', label: 'Transfers', icon: 'truck', screens: ['outward', 'inward'] },
     { key: 'labels', label: 'Labels', icon: 'qr', screens: ['labels', 'labelprint'] },
+    // Supplier Payment leads it, as in the reference menu; it is also under
+    // Purchase, where the bills it settles are raised.
+    { key: 'finance', label: 'Finance', icon: 'rupee', screens: ['payments', ...FIN_SCREENS.map(([k]) => k)] },
     { key: 'reports', label: 'Reports', icon: 'trending', screens: ['reports', 'audit'] },
     { key: 'setup', label: 'Setup', icon: 'sliders', screens: ['masters', 'catalogues', 'locations', 'users'] },
   ],
@@ -18925,7 +18966,7 @@ export default function App() {
   // it is that nobody is shown twelve buttons that answer "not for you".
   const granted = perms?.screens || null
   const modules = MODULES.filter((m) => (!m.min || atLeast(role, m.min))
-    && (!granted || (granted[m.key] || []).length)
+    && (!granted || (granted[m.perm || m.key] || []).length)
     // Company-level screens are hidden once you are standing inside a warehouse.
     // Neither has an answer at that altitude: the Central Dashboard compares
     // every warehouse, and Locations is where warehouses are created and closed.
@@ -19433,8 +19474,10 @@ export default function App() {
         <Returns toast={toast} />
       ) : k === 'payments' ? (
         <Payments toast={toast} />
+      ) : String(k).startsWith('fin_') ? (
+        <Finance key={k} screen={k} toast={toast} />
       ) : k === 'reports' ? (
-        <Reports />
+        <Reports toast={toast} finance={modules.some((m) => m.perm === 'finance')} />
       ) : k === 'masters' ? (
         // No role check here any more — the guard above the chain covers every
         // module from its MODULES entry, so this cannot drift out of step with
@@ -19467,3 +19510,7 @@ export default function App() {
     )
   }
 }
+
+// The building blocks Finance.jsx draws its screens from, so the books look and
+// behave like every other module rather than like a second app bolted on.
+export { Section, Stat, DateField, SearchBox, money, fmtDate, Icon }
