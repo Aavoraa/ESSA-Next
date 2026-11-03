@@ -1919,6 +1919,11 @@ export const FIN_SCREENS = [
   ['fin_opening', 'Opening Balance', 'What every ledger held on day one', 'rupee'],
 ]
 
+//: The Finance screens that are reports — they read the books and change
+//: nothing — listed again under Reports, in the order a month-end is read.
+export const FIN_REPORT_KEYS = ['fin_daybook', 'fin_trial', 'fin_trading', 'fin_pl', 'fin_bs', 'fin_dailypl',
+  'fin_payable', 'fin_receivable', 'fin_analyser', 'fin_tds', 'fin_gst', 'fin_loans', 'fin_incentive']
+
 export default function Finance({ screen, toast }) {
   switch (screen) {
     case 'fin_transport': return <PayeeScreen key="t" kind="transport" toast={toast} />
