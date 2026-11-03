@@ -653,6 +653,11 @@ app.include_router(finance.router)
 _pos_error = None
 _pos_app = None
 _pos_loaded = False
+#: When the last attempt failed. A failure used to be kept for the life of the
+#: instance, so one passing error (another instance creating the same table at
+#: the same moment) left that instance's POS dead until it was restarted.
+_pos_failed_at = 0.0
+_POS_RETRY_SECONDS = 20
 
 
 @app.on_event("startup")
@@ -700,8 +705,10 @@ def _start_search_sync():
 
 def _pos_asgi():
     """The mounted shop, built on demand and kept for the life of the instance."""
-    global _pos_app, _pos_error, _pos_loaded
-    if _pos_loaded:
+    global _pos_app, _pos_error, _pos_loaded, _pos_failed_at
+    import time
+    if _pos_loaded and (_pos_app is not None
+                        or time.monotonic() - _pos_failed_at < _POS_RETRY_SECONDS):
         return _pos_app
     _pos_loaded = True
     try:
@@ -714,6 +721,7 @@ def _pos_asgi():
         _pos_app = WSGIMiddleware(flask_app)
     except Exception as exc:                           # noqa: BLE001 — reported, not raised
         _pos_app, _pos_error = None, f"{type(exc).__name__}: {exc}"
+        _pos_failed_at = time.monotonic()
     return _pos_app
 
 
@@ -722,6 +730,8 @@ def _pos_unavailable_html(rest: str = "") -> str:
     return ("<body style=\"font:14px/1.6 system-ui;padding:32px;color:#33261F\">"
             "<h2 style='margin:0 0 8px'>POS is not loaded</h2>"
             f"<p>{_pos_error}</p>"
+            f"<p>It is tried again on the next visit after {_POS_RETRY_SECONDS} seconds — "
+            "a passing database error clears itself on a refresh.</p>"
             "<p>The shop lives in the <b>Textile Retail Shop</b> folder beside "
             "this project and needs its Python packages in the backend "
             "environment:</p>"

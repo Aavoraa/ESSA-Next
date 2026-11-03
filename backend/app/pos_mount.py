@@ -147,6 +147,45 @@ def _isolate_shop_schema() -> None:
     os.environ["SHOP_DB_SCHEMA"] = POS_SCHEMA
 
 
+#: The key of the Postgres advisory lock the shop's CREATE TABLEs run under. Any
+#: fixed number does; this one spells "ESSA".
+_SCHEMA_LOCK = 0x45535341
+
+
+def _create_shop_tables(db) -> None:
+    """`create_all` for the shop, safe when several instances start at once.
+
+    On a serverless deployment every cold instance builds the shop on its first
+    /pos request, so two of them can reach `create_all` in the same second. Each
+    checks that a new table (customer_orders, the day it shipped) is missing,
+    both issue CREATE TABLE, and the second dies on Postgres's own catalogue —
+    `duplicate key value violates unique constraint "pg_type_typname_nsp_index"`
+    — which took the whole POS down on that instance.
+
+    So the check-and-create runs inside one transaction holding an advisory
+    lock: the second instance waits, then finds the table already there and
+    creates nothing. The lock goes with the transaction. "Already exists" is
+    still retried, for an instance running code from before this lock that does
+    not take it. SQLite has no such race — one file, one process — and is left
+    to `create_all` as before.
+    """
+    engine = db.engine
+    if engine.dialect.name != "postgresql":
+        db.create_all()
+        return
+    from sqlalchemy import text
+    from sqlalchemy.exc import IntegrityError, ProgrammingError
+    for attempt in range(3):
+        try:
+            with engine.begin() as conn:
+                conn.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _SCHEMA_LOCK})
+                db.metadata.create_all(bind=conn)
+            return
+        except (IntegrityError, ProgrammingError) as exc:
+            if attempt == 2 or "already exists" not in str(exc):
+                raise
+
+
 def load_pos_app():
     """Import and return the shop's Flask application, or raise.
 
@@ -187,7 +226,7 @@ def load_pos_app():
         if store_name:
             flask_app.config["SHOP_NAME"] = store_name
         with flask_app.app_context():
-            pkg.db.create_all()                     # first run: build the schema
+            _create_shop_tables(pkg.db)             # first run: build the schema
             # The shop's categories are the warehouse master's, and its catalogue
             # is the warehouse's items — both kept in step on every start, and
             # both before the seed so a fresh shop seeds against them.
