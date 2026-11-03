@@ -82,6 +82,10 @@
           </ul>
         </li>
       </ul>
+      {# Inside Essa the account is Essa's, and Essa's own header already says who
+         is signed in — a second name chip in the frame only repeated it, and it
+         had no Logout to offer (app/sso). A Store opened on its own keeps it. #}
+      {% if not ESSA_SIGNED_IN %}
       <ul class="navbar-nav align-items-lg-center">
         <li class="nav-item dropdown">
           <a class="nav-link user-chip dropdown-toggle" href="#" data-bs-toggle="dropdown" aria-expanded="false"
@@ -94,14 +98,11 @@
           </a>
           <ul class="dropdown-menu dropdown-menu-end">
             <li><h6 class="dropdown-header">{{ current_user.full_name }} · {{ current_user.role }}</h6></li>
-            {% if ESSA_SIGNED_IN %}
-            <li><span class="dropdown-item-text small text-muted">Signed in through Essa</span></li>
-            {% else %}
             <li><a class="dropdown-item" href="{{ url_for('auth.logout') }}"><i class="bi bi-box-arrow-right"></i> Logout</a></li>
-            {% endif %}
           </ul>
         </li>
       </ul>
+      {% endif %}
     </div>
   </div>
 </nav>
