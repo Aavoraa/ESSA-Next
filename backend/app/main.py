@@ -765,8 +765,16 @@ def _with_store_access(scope):
     from .services.users import resolve_token
     from starlette.requests import Request as _Request
 
+    from urllib.parse import quote
+    from . import pos_mount
+
     name = perms_svc.STORE_HEADER.encode()
-    headers = [(k, v) for k, v in scope.get("headers", []) if k.lower() != name]
+    # The Essa account, for the shop to sign in as (see the shop's app/sso). Any
+    # copy a browser sent is stripped with the access header, whatever follows.
+    sso_key = pos_mount.SSO_KEY_HEADER.encode()
+    sso_user = pos_mount.SSO_USER_HEADER.encode()
+    ours = {name, sso_key, sso_user}
+    headers = [(k, v) for k, v in scope.get("headers", []) if k.lower() not in ours]
     if "/static/" in scope.get("path", ""):
         return dict(scope, headers=headers)            # css, icons: nothing to gate
     # A throwaway copy for reading the cookie: Starlette's Request replaces the
@@ -774,6 +782,7 @@ def _with_store_access(scope):
     # would not be the one the shop receives.
     token = token_from(_Request(dict(scope, headers=list(headers))))
     narrow = False
+    who = None
     if token:
         try:
             from .database import SessionLocal
@@ -782,11 +791,17 @@ def _with_store_access(scope):
                 user = resolve_token(db, token)
                 narrow = user is not None and perms_svc.store_access(
                     perms_svc.normalise(user.permissions), user.role) == "user"
+                if user is not None:
+                    who = "|".join(quote(x or "", safe="") for x in
+                                   (user.username, user.role, user.full_name))
             finally:
                 db.close()
         except Exception:                              # noqa: BLE001
             narrow = True
-    return dict(scope, headers=headers + ([(name, b"user")] if narrow else []))
+    extra = [(name, b"user")] if narrow else []
+    if who:
+        extra += [(sso_key, pos_mount.SSO_KEY.encode()), (sso_user, who.encode())]
+    return dict(scope, headers=headers + extra)
 
 
 class _PosMount:

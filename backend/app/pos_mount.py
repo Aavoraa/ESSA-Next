@@ -24,6 +24,7 @@ swap is over.
 
 import importlib
 import os
+import secrets
 import sys
 from pathlib import Path
 
@@ -147,6 +148,16 @@ def _isolate_shop_schema() -> None:
     os.environ["SHOP_DB_SCHEMA"] = POS_SCHEMA
 
 
+#: Proves a request came through this mount. The Store signs in whoever is
+#: signed in to Essa (the mount names them in a header — main._with_store_access),
+#: and it must only believe that header from here: the mount strips any copy a
+#: browser sent, but a shop reached some other way would not. So the mount sends
+#: this key with the name and the shop checks it. Made fresh per process — the
+#: mount and the shop it loads always live in the same one — and never stored.
+SSO_KEY = secrets.token_urlsafe(32)
+SSO_KEY_HEADER = "x-essa-sso-key"
+SSO_USER_HEADER = "x-essa-store-user"
+
 #: The key of the Postgres advisory lock the shop's CREATE TABLEs run under. Any
 #: fixed number does; this one spells "ESSA".
 _SCHEMA_LOCK = 0x45535341
@@ -203,8 +214,10 @@ def load_pos_app():
     store_name = _single_store_name()
 
     _isolate_shop_schema()
+    # read by the shop's create_app, so only a request carrying it is believed
+    os.environ["ESSA_STORE_SSO_KEY"] = SSO_KEY
 
-    ours = {k: v for k, v in sys.modules.items() if _is_ours(k)}
+    ours ={k: v for k, v in sys.modules.items() if _is_ours(k)}
     for name in ours:
         del sys.modules[name]
     sys.path.insert(0, str(POS_DIR))

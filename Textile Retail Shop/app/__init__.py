@@ -219,7 +219,7 @@ def create_app(config_class=Config):
     # in the handler would reach for the wrong package. create_app runs while the
     # name is still ours (see backend/app/pos_mount.py), so the module objects
     # captured now stay correct for the life of the process.
-    from app import dbpatch, modules, warehouse_items, places as places_mod
+    from app import dbpatch, modules, warehouse_items, places as places_mod, sso
 
     @app.before_request
     def refresh_from_warehouse():
@@ -239,6 +239,22 @@ def create_app(config_class=Config):
             # ImportError and looked exactly like a sync that had nothing to do.
             db.session.rollback()
             app.logger.warning("warehouse refresh failed", exc_info=True)
+
+    @app.before_request
+    def _sign_in_from_essa():
+        """Inside Essa, the Essa account IS the Store login — see app/sso.
+
+        After the warehouse refresh (which patches the schema the users table
+        is read from) and before the access gate, which narrows whoever this
+        signs in. Static files need no one."""
+        if request.endpoint == "static":
+            return
+        try:
+            sso.sign_in(request, db, User)
+        except Exception:
+            # the shop's own login page is the fallback, never a 500
+            db.session.rollback()
+            app.logger.warning("Essa sign-in to the Store failed", exc_info=True)
 
     @app.before_request
     def _capture_warehouse_scope():
@@ -304,6 +320,9 @@ def create_app(config_class=Config):
         return {
             "SHOP_MODULES": modules.menu(current_user, restricted=store_user, endpoint=request.endpoint),
             "STORE_USER": store_user,
+            # signed in through Essa: its own Logout would only sign straight
+            # back in, so the menu leaves it out (base.html)
+            "ESSA_SIGNED_IN": sso.essa_account(request) is not None,
             "CURRENT_MODULE": modules.current(request.endpoint),
             "SHOP_NAME": app.config["SHOP_NAME"],
             "SHOP_ADDRESS": app.config["SHOP_ADDRESS"],
