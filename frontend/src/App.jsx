@@ -16966,6 +16966,36 @@ const POS_SCREENS = [
     blurb: 'Scan or filter to find an item and where it is' },
   { key: 'pos:customers', icon: '🧍', label: 'Customers', path: '/customers/',
     blurb: 'Customer master, loyalty points and history' },
+  // CRM — everything about the customer after the master, in the reference
+  // software's order. Listed under the rail's CRM category (NAV_RAIL.store).
+  { key: 'pos:crm_orders', icon: '🛍', label: 'Customer Orders', path: '/orders/',
+    blurb: 'Orders taken for later — what, by when, and what was paid' },
+  { key: 'pos:loyalty', icon: '🏅', label: 'Loyalty Management', path: '/loyalty/',
+    blurb: 'Points earned and redeemed, by card, phone or name' },
+  { key: 'pos:gift_vouchers', icon: '🎁', label: 'Gift Voucher', path: '/gift-vouchers/',
+    blurb: 'Sell vouchers by denomination; they are spent at Settlement' },
+  { key: 'pos:gift_coupons', icon: '🎟', label: 'Gift Coupon', path: '/coupons/',
+    blurb: 'Coupon schemes, issuing, rewards to coupon and their history' },
+  { key: 'pos:price_list', icon: '🏷', label: 'Price List', path: '/price-list/',
+    blurb: 'Price categories, the designs on them and who buys on them' },
+  { key: 'pos:crm_analyser', icon: '📊', label: 'CRM Analyser', path: '/crm-analyser/',
+    blurb: 'Who buys, how often, how much — and who has stopped coming' },
+  { key: 'pos:send_sms', icon: '💬', label: 'Send SMS', path: '/send-sms/',
+    blurb: 'Pick customers by what they bought, where and when, and message them' },
+  { key: 'pos:feedback_dashboard', icon: '⭐', label: 'Feedback Dashboard', path: '/crm-feedback/',
+    blurb: 'How customers rate the store, question by question' },
+  { key: 'pos:feedback_questions', icon: '❓', label: 'Feedback Questions', path: '/crm-feedback/questions',
+    blurb: 'The questions customers are asked' },
+  { key: 'pos:feedback_report', icon: '📋', label: 'Feedback Report', path: '/crm-feedback/report',
+    blurb: 'Every response with its answers, filtered and exported' },
+  { key: 'pos:feedback_form', icon: '⚙️', label: 'Feedback Form Config', path: '/crm-feedback/form',
+    blurb: 'What the customer\'s feedback page asks and says' },
+  { key: 'pos:customer_divert', icon: '🪧', label: 'Customer Divert', path: '/customer-divert/',
+    blurb: 'Meet walk-ins at the door and send them to a floor and a salesperson' },
+  { key: 'pos:leads', icon: '🙋', label: 'Lead Management', path: '/leads/',
+    blurb: 'Enquiries to follow up, and which of them became customers' },
+  { key: 'pos:self_registration', icon: '🔳', label: 'Self Registration', path: '/registration/',
+    blurb: 'The sign-up QR, its form, and the sign-ups waiting for approval' },
   { key: 'pos:invoices', icon: '🧾', label: 'Invoices', path: '/pos/invoices',
     blurb: 'Every bill raised, searchable and reprintable' },
   { key: 'pos:returns', icon: '↩️', label: 'Returns', path: '/returns/',
@@ -17013,8 +17043,10 @@ function PosScreen({ screen, available, error, warehouse: wh, active = true }) {
   // remembers it and offers only the branches that warehouse supplies. Sent as a
   // query parameter because a frame cannot carry a header, and only on the first
   // load of each screen — the shop keeps it in its own session from there.
-  const src = '/pos' + screen.path
-    + (wh?.id ? (screen.path.includes('?') ? '&' : '?') + 'wh=' + wh.id : '')
+  // Opened from Central there is no warehouse, and an empty `wh=` says so: it
+  // CLEARS the scope a warehouse frame left in the shop's session, so the CRM at
+  // Central is every branch rather than whichever one was visited last.
+  const src = '/pos' + screen.path + (screen.path.includes('?') ? '&' : '?') + 'wh=' + (wh?.id || '')
   return (
     <div className="posframe">
       <iframe ref={frame} key={screen.path + ':' + (wh?.id || '')} src={src}
@@ -17080,6 +17112,20 @@ const ICONS = {
   compass: <><circle cx="12" cy="12" r="10" /><path d="m16.24 7.76-1.8 5.41a2 2 0 0 1-1.27 1.27L7.76 16.24l1.8-5.41a2 2 0 0 1 1.27-1.27z" /></>,
   history: <><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5M12 7v5l3.5 2" /></>,
   sparkle: <><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1" /><circle cx="12" cy="12" r="3" /></>,
+  // CRM — a person with a speech bubble, as the reference software draws it
+  crm: <><circle cx="9" cy="8" r="4" /><path d="M3 21v-1a6 6 0 0 1 12 0v1" /><path d="M16 3h5a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-2l-2 2V9h-1a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" /></>,
+  bag: <><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z" /><path d="M3 6h18M16 10a4 4 0 0 1-8 0" /></>,
+  award: <><path d="m15.477 12.89 1.515 8.526a.5.5 0 0 1-.81.47l-3.58-2.687a1 1 0 0 0-1.197 0l-3.586 2.686a.5.5 0 0 1-.81-.469l1.514-8.526" /><circle cx="12" cy="8" r="6" /></>,
+  gift: <><rect x="3" y="8" width="18" height="4" rx="1" /><path d="M12 8v13M19 12v7a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-7" /><path d="M7.5 8a2.5 2.5 0 0 1 0-5A4.8 8 0 0 1 12 8a4.8 8 0 0 1 4.5-5 2.5 2.5 0 0 1 0 5" /></>,
+  ticket: <><path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z" /><path d="M13 5v2M13 17v2M13 11v2" /></>,
+  barchart: <path d="M3 3v18h18M18 17V9M13 17V5M8 17v-3" />,
+  message: <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />,
+  gauge: <><path d="m12 14 4-4" /><path d="M3.34 19a10 10 0 1 1 17.32 0" /></>,
+  help: <><circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01" /></>,
+  cliplist: <><rect width="8" height="4" x="8" y="2" rx="1" /><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2M12 11h4M12 16h4M8 11h.01M8 16h.01" /></>,
+  listchecks: <path d="m3 17 2 2 4-4M3 7l2 2 4-4M13 6h8M13 12h8M13 18h8" />,
+  signpost: <><path d="M12 13v8M12 3v3" /><path d="M18 6a2 2 0 0 1 1.387.56l2.307 2.22a1 1 0 0 1 0 1.44l-2.307 2.22A2 2 0 0 1 18 13H6a2 2 0 0 1-1.387-.56l-2.306-2.22a1 1 0 0 1 0-1.44l2.306-2.22A2 2 0 0 1 6 6z" /></>,
+  userplus: <><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M19 8v6M22 11h-6" /></>,
 }
 
 function Icon({ name, size = 16, className }) {
@@ -17108,6 +17154,11 @@ const NAV_ICON = {
   'pos:checker': 'search', 'pos:customers': 'usercheck', 'pos:invoices': 'receipt',
   'pos:returns': 'undo', 'pos:alterations': 'scissors', 'pos:stores': 'layers',
   'pos:promotions': 'percent', 'pos:staff': 'users', 'pos:reports': 'spreadsheet',
+  'pos:crm_orders': 'bag', 'pos:loyalty': 'award',
+  'pos:gift_vouchers': 'gift', 'pos:gift_coupons': 'ticket', 'pos:price_list': 'tag',
+  'pos:crm_analyser': 'barchart', 'pos:send_sms': 'message', 'pos:feedback_dashboard': 'gauge',
+  'pos:feedback_questions': 'help', 'pos:feedback_report': 'cliplist', 'pos:feedback_form': 'listchecks',
+  'pos:customer_divert': 'signpost', 'pos:leads': 'userplus', 'pos:self_registration': 'qr',
   'ws:central': 'grid', 'ws:warehouse': 'building', 'ws:store': 'store',
   ...Object.fromEntries(FIN_SCREENS.map(([k, , , icon]) => [k, icon])),
 }
@@ -17230,6 +17281,20 @@ function NavSidebar({ kind, context, items, tab, go, online, foot, drawer, onClo
 }
 
 // ---------- the side rail ----------
+//: The CRM: the customer master and everything that follows from it — the same
+//: screens, in the same order, as the CRM module of the reference software.
+//: It lives at Central only: the customer book is the company's, not one
+//: building's, so the shop opens these unscoped — every branch's customers,
+//: orders, vouchers and feedback at once.
+const CRM_SCREENS = ['pos:customers', 'pos:crm_orders', 'pos:loyalty',
+  'pos:gift_vouchers', 'pos:gift_coupons', 'pos:promotions', 'pos:price_list', 'pos:crm_analyser',
+  'pos:send_sms', 'pos:feedback_dashboard', 'pos:feedback_questions', 'pos:feedback_report',
+  'pos:feedback_form', 'pos:customer_divert', 'pos:leads', 'pos:self_registration']
+const CRM_SET = new Set(CRM_SCREENS)
+//: …and of those, the ones that are ONLY the CRM's. Customers and Promotions
+//: were the Store's before there was a CRM and stay in its menu as well.
+const CRM_ONLY = new Set(CRM_SCREENS.filter((k) => k !== 'pos:customers' && k !== 'pos:promotions'))
+
 // A narrow column of categories, each opening a fly-out of its screens. Each
 // workspace has its OWN set, named for the work done there: the warehouse buys,
 // holds, moves and labels stock; the store bills, keeps its floor stock and
@@ -17241,6 +17306,7 @@ const NAV_RAIL = {
   central: [
     { key: 'home', label: 'Home', icon: 'dashboard', screens: ['command', 'central', 'pickwh'] },
     { key: 'stock', label: 'Stock', icon: 'boxes', screens: ['locator'] },
+    { key: 'crm', label: 'CRM', icon: 'crm', screens: CRM_SCREENS },
     { key: 'finance', label: 'Finance', icon: 'rupee', screens: ['payments', ...FIN_SCREENS.map(([k]) => k)] },
     { key: 'reports', label: 'Reports', icon: 'trending', screens: ['reports', 'audit'] },
     { key: 'setup', label: 'Setup', icon: 'sliders', screens: ['locations', 'users'] },
@@ -18680,6 +18746,10 @@ export default function App() {
   const storeUser = perms?.store === 'user' || role === 'user'
   const storeHome = storeUser ? 'pos:counter' : 'pos:home'
   const posItems = storeUser ? POS_ITEMS.filter((p) => p && POS_USER_KEYS.has(p.key)) : POS_ITEMS
+  // The CRM screens this account may open — at Central, and only there.
+  const crmItems = posItems.filter((p) => p && CRM_SET.has(p.key))
+  // The Store's own screens: everything the shop has but the CRM-only ones.
+  const storeItems = posItems.filter((p) => !p || !CRM_ONLY.has(p.key))
   const [showPassword, setShowPassword] = useState(false)
 
   // Where an account lands when it is outside every warehouse. The Central
@@ -18708,7 +18778,7 @@ export default function App() {
   const settleTab = (t) => {
     if (here && COMPANY_ONLY.has(t)) return 'dashboard'
     let next = t
-    if (!here && t !== 'pickwh' && !COMPANY_LEVEL.has(t)) next = homeTab
+    if (!here && t !== 'pickwh' && !COMPANY_LEVEL.has(t) && !crmItems.some((p) => p.key === t)) next = homeTab
     if (!here && t === 'central' && !canCentral) next = 'pickwh'
     // The same for the Command Center: a terminal left on it by the owner must
     // not greet an admin with a screen the server will refuse.
@@ -18717,6 +18787,8 @@ export default function App() {
     // A remembered Store tab this account is no longer given — the last person
     // at this terminal was an admin, or the access was narrowed since.
     if (here && storeUser && String(t).startsWith('pos:') && !POS_USER_KEYS.has(t)) next = storeHome
+    // A CRM screen is Central's; inside a building it has no menu to be found in.
+    if (here && CRM_ONLY.has(t)) next = storeHome
     return next
   }
   const settledTab = settleTab(tab)
@@ -18931,8 +19003,11 @@ export default function App() {
   // a remembered last screen (or an old tab strip) naming one of them
   useEffect(() => { if (foldsIntoInvoiceEntry(tab) || IN_STOCK_AUDIT[tab]) setTab(tab) }, [tab, modules.length])
   const availableHere = (k) => {
-    // The shop is reached from inside the warehouse that supplies it.
-    if (String(k).startsWith('pos:')) return !!here && posItems.some((p) => p && p.key === k)
+    // The shop is reached from inside the warehouse that supplies it — except
+    // its CRM, which is the company's and is opened from Central.
+    if (String(k).startsWith('pos:')) {
+      return here ? storeItems.some((p) => p && p.key === k) : crmItems.some((p) => p.key === k)
+    }
     const m = MODULES.find((x) => x.key === k)
     if (!m) return false
     return modules.includes(m)
@@ -19039,7 +19114,7 @@ export default function App() {
 
   // What the sidebar lists at each altitude.
   const navItems = ws === 'store'
-    ? posItems.map((p) => (p && p.key === 'pos:counter' ? { ...p, badge: 'POS' } : p))
+    ? storeItems.map((p) => (p && p.key === 'pos:counter' ? { ...p, badge: 'POS' } : p))
     : here
       ? [DASHBOARD, null, ...modules.filter((m) => !foldsIntoInvoiceEntry(m.key) && !IN_STOCK_AUDIT[m.key])]
       // The two whole-company screens are hoisted to the top, in altitude order:
@@ -19047,7 +19122,8 @@ export default function App() {
       : [...modules.filter((m) => m.key === 'command' || m.key === 'central'),
          ...(canCentral ? [] : [{ key: 'pickwh', label: 'Choose a warehouse',
            blurb: 'Pick the building you are working in' }]),
-         null, ...modules.filter((m) => m.key !== 'central' && m.key !== 'command')]
+         null, ...modules.filter((m) => m.key !== 'central' && m.key !== 'command'),
+         ...(crmItems.length ? [null, ...crmItems] : [])]
   // the category page opened from the rail (see CategoryPage); it belongs to the
   // workspace it was opened in, and is gone once that changes
   const [catPage, setCatPage] = useState(null)
@@ -19063,7 +19139,7 @@ export default function App() {
   const jumpGroups = [
     ...(here
       ? [{ title: `Warehouse · ${here.name}`, items: [DASHBOARD, ...modules] },
-         { title: storeLabel, items: posItems.filter(Boolean) }]
+         { title: storeLabel, items: storeItems.filter(Boolean) }]
       : [{ title: 'Central', items: tidyRules(navItems).filter(Boolean) }]),
     { title: 'Workspaces', items: [
       { key: 'ws:central', label: 'Central', blurb: 'The whole company — every warehouse at once' },
@@ -19304,7 +19380,7 @@ export default function App() {
   function screenFor(k) {
     // A `pos:` tab is a screen of the shop rather than one of ours, and is
     // served in a frame — so it is answered before the warehouse chain.
-    const ps = posItems.find((p) => p && p.key === k)
+    const ps = (here ? storeItems : crmItems).find((p) => p && p.key === k)
     if (ps) return <PosScreen screen={ps} available={status?.pos?.available}
       error={status?.pos?.error} warehouse={here} />
     // A Store screen this account is not given draws nothing for the one render

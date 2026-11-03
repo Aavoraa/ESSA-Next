@@ -1,9 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="page-head">
-  <h4><i class="bi bi-ticket-perforated"></i> Coupons</h4>
-  <a href="{{ url_for('promotions.index') }}" class="btn btn-outline-secondary btn-sm"><i class="bi bi-gift"></i> Promotion schemes</a>
-</div>
+{% include "coupons/_head.html" %}
 
 <div class="row g-3 mb-3">
   <div class="col-lg-5">
@@ -110,7 +107,7 @@
         {% set state = cp.state(today) %}
         {% set css = {'valid': 'success', 'used': 'info'}.get(state, 'neutral') %}
         <tr>
-          <td><code class="fs-6">{{ cp.code }}</code></td>
+          <td><code class="fs-6">{{ cp.code }}</code>{% if cp.value is not none %}<br><span class="small text-muted">₹{{ '%g'|format(cp.value) }}</span>{% endif %}</td>
           <td class="small">{{ cp.campaign.name }}</td>
           <td class="small">{% if cp.customer %}<a href="{{ url_for('customers.view_customer', cid=cp.customer_id) }}">{{ cp.customer.name }}</a>{% else %}<span class="text-muted">anyone</span>{% endif %}</td>
           <td class="small text-nowrap">{{ cp.valid_from|dmy }}<br>to {{ cp.valid_to|dmy or 'open' }}</td>

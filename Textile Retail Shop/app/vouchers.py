@@ -7,6 +7,8 @@ Three things that look alike at the till and are different underneath:
                 payment's reference.
   advance       money left with the shop before a bill exists. Also a tender,
                 drawn on the customer's own advances, oldest first.
+  gift voucher  money somebody paid for a code they gave away. A TENDER, like
+                store credit, and anyone holding the code may spend it.
   coupon        not money the customer paid at all, but a reduction the shop
                 gives. So it comes off the bill as a DISCOUNT, not as a tender.
 
@@ -22,7 +24,7 @@ from sqlalchemy import func
 
 from app import db
 from app.models import (VOUCHER_METHODS, Coupon, CouponCampaign, CouponRedemption,
-                        CreditNote, CustomerAdvance, Invoice, InvoicePayment)
+                        CreditNote, CustomerAdvance, GiftVoucher, Invoice, InvoicePayment)
 
 TOL = 0.01
 
@@ -85,6 +87,50 @@ def customer_advance_balance(customer_id):
 
 
 # ---------------------------------------------------------------------------
+#  gift vouchers
+# ---------------------------------------------------------------------------
+def find_gift_voucher(code):
+    code = (code or "").strip().upper()
+    if not code:
+        return None
+    return GiftVoucher.query.filter(func.upper(GiftVoucher.code) == code).first()
+
+
+def gift_voucher_used(v):
+    return _spent("gift_voucher", v.code)
+
+
+def gift_voucher_balance(v):
+    return round(max(0.0, (v.value or 0) - gift_voucher_used(v)), 2)
+
+
+def gift_voucher_problem(v, today=None):
+    """Why this voucher cannot be spent today, or None if it can."""
+    today = today or date.today()
+    if v is None:
+        return "No gift voucher with that number"
+    b = v.batch
+    if not v.active:
+        return f"{v.code} has been cancelled"
+    if b and b.valid_from and today < b.valid_from:
+        return f"{v.code} is valid from {b.valid_from.strftime('%d-%m-%Y')}"
+    if b and b.valid_to and today > b.valid_to:
+        return f"{v.code} expired on {b.valid_to.strftime('%d-%m-%Y')}"
+    if gift_voucher_balance(v) <= TOL:
+        return f"{v.code} has been spent in full"
+    return None
+
+
+def gift_voucher_redemptions(v):
+    """The bills that spent this voucher, cancelled ones included (marked)."""
+    return (db.session.query(InvoicePayment, Invoice)
+            .join(Invoice, Invoice.id == InvoicePayment.invoice_id)
+            .filter(InvoicePayment.method == "gift_voucher",
+                    InvoicePayment.reference == v.code)
+            .order_by(Invoice.invoice_date).all())
+
+
+# ---------------------------------------------------------------------------
 #  tenders at the till
 # ---------------------------------------------------------------------------
 def settle_vouchers(payments, customer_id):
@@ -114,6 +160,21 @@ def settle_vouchers(payments, customer_id):
                 raise ValueError(f"{note.number} has ₹{credit_note_balance(note):.2f} "
                                  f"left, not ₹{wanted[key]:.2f}")
             out.append({**p, "reference": note.number, "tendered": p["amount"]})
+            continue
+
+        if p["method"] == "gift_voucher":
+            v = find_gift_voucher(p.get("reference"))
+            problem = gift_voucher_problem(v)
+            if problem:
+                raise ValueError(problem if v else
+                                 f"No gift voucher “{p.get('reference') or ''}” — "
+                                 "type the number printed on it")
+            key = ("gift_voucher", v.code)
+            wanted[key] = round(wanted.get(key, 0) + p["amount"], 2)
+            if wanted[key] > gift_voucher_balance(v) + TOL:
+                raise ValueError(f"{v.code} has ₹{gift_voucher_balance(v):.2f} "
+                                 f"left, not ₹{wanted[key]:.2f}")
+            out.append({**p, "reference": v.code, "tendered": p["amount"]})
             continue
 
         # an advance: the customer's own money, so it needs the customer
@@ -186,7 +247,7 @@ def coupon_amount(coupon, bill, customer_id=None, today=None, discount_room=None
         if c.max_discount:
             amount = min(amount, c.max_discount)
     else:
-        amount = c.value or 0
+        amount = coupon.value if coupon.value is not None else (c.value or 0)
     amount = min(amount, bill)
     if discount_room is not None:
         amount = min(amount, max(0.0, discount_room))
@@ -201,10 +262,11 @@ def _new_code(prefix="CP"):
 
 
 def issue(campaign, customer_id=None, via="manual", invoice_id=None, user_id=None,
-          today=None, code=None):
+          today=None, code=None, value=None):
     today = today or date.today()
     days = max(1, int(campaign.valid_days or 30))
     coupon = Coupon(code=(code or _new_code()).strip().upper(), campaign_id=campaign.id,
+                    value=value,
                     customer_id=customer_id, valid_from=today,
                     valid_to=today + timedelta(days=days - 1),
                     uses_allowed=campaign.uses_per_coupon, issued_via=via,

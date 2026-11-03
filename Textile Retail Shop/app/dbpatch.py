@@ -132,6 +132,45 @@ COLUMNS = [
     ("invoices", "discount_by_id", "INTEGER"),
     # Which till raised a credit note, so a cash refund comes out of its drawer.
     ("credit_notes", "counter_id", "INTEGER"),
+    # The CRM's customer master — see models.Customer. All nullable, and the
+    # flags worded so that blank is the ordinary case.
+    ("customers", "customer_type", "VARCHAR(16)"),
+    ("customers", "category", "VARCHAR(64)"),
+    ("customers", "code", "VARCHAR(32)"),
+    ("customers", "alt_phone", "VARCHAR(32)"),
+    ("customers", "billing_name", "VARCHAR(128)"),
+    ("customers", "gender", "VARCHAR(8)"),
+    ("customers", "married", "BOOLEAN"),
+    ("customers", "kids_boys", "INTEGER"),
+    ("customers", "kids_girls", "INTEGER"),
+    ("customers", "loyalty_card", "VARCHAR(32)"),
+    ("customers", "supply_type", "VARCHAR(8)"),
+    ("customers", "tan", "VARCHAR(16)"),
+    ("customers", "pan", "VARCHAR(16)"),
+    ("customers", "credit_allowed", "BOOLEAN"),
+    ("customers", "credit_days", "INTEGER"),
+    ("customers", "credit_limit", "FLOAT"),
+    ("customers", "city", "VARCHAR(64)"),
+    ("customers", "district", "VARCHAR(64)"),
+    ("customers", "area", "VARCHAR(64)"),
+    ("customers", "pincode", "VARCHAR(12)"),
+    ("customers", "state", "VARCHAR(64)"),
+    ("customers", "country", "VARCHAR(64)"),
+    ("customers", "religion", "VARCHAR(32)"),
+    ("customers", "customer_group", "VARCHAR(64)"),
+    ("customers", "bank_account_name", "VARCHAR(128)"),
+    ("customers", "bank_account_no", "VARCHAR(32)"),
+    ("customers", "bank_ifsc", "VARCHAR(16)"),
+    ("customers", "registered_location_id", "INTEGER"),
+    ("customers", "source", "VARCHAR(16)"),
+    ("customers", "awaiting_approval", "BOOLEAN"),
+    ("customers", "loyalty_disabled", "BOOLEAN"),
+    ("customers", "inactive", "BOOLEAN"),
+    ("customers", "price_category_id", "INTEGER"),
+    # An advance paid against a customer order — see models.CustomerOrder.
+    ("customer_advances", "order_id", "INTEGER"),
+    # A coupon worth its own amount — one bought with loyalty points.
+    ("coupons", "value", "FLOAT"),
 ]
 
 

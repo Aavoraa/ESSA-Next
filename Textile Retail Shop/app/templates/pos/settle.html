@@ -107,7 +107,8 @@
         {% for m, label, icon, hint in [('card','Card','bi-credit-card','Approval / last 4'),
                                        ('upi','UPI','bi-phone','UPI reference'),
                                        ('credit_note','Credit note','bi-arrow-left-right','Credit note no. (required)'),
-                                       ('advance','Advance','bi-wallet2','Advance no. (optional)')] %}
+                                       ('advance','Advance','bi-wallet2','Advance no. (optional)'),
+                                       ('gift_voucher','Gift voucher','bi-gift','Voucher no. (required)')] %}
         <div class="tender" data-method="{{ m }}">
           <label class="t-name"><i class="bi {{ icon }}"></i> {{ label }}</label>
           <input class="form-control t-amt" data-method="{{ m }}" type="number" min="0" step="0.01" placeholder="0.00">
@@ -115,7 +116,7 @@
             <input class="form-control form-control-sm t-ref" data-method="{{ m }}" maxlength="64" placeholder="{{ hint }}">
             <button type="button" class="btn btn-outline-primary btn-sm t-rest" data-method="{{ m }}" title="Put the rest of the bill on {{ label }}">Rest</button>
           </div>
-          {% if m in ('credit_note', 'advance') %}<div class="t-note small" data-method="{{ m }}"></div>{% endif %}
+          {% if m in ('credit_note', 'advance', 'gift_voucher') %}<div class="t-note small" data-method="{{ m }}"></div>{% endif %}
         </div>
         {% endfor %}
       </div>
@@ -181,15 +182,28 @@ const BILL_ID = {{ inv.id }};
 const DUE = r2({{ due }});
 const CUSTOMER_ID = {{ inv.customer_id or 'null' }};
 const EXCHANGE = {{ exchange | tojson }};
-const METHODS = ['card', 'upi', 'credit_note', 'advance'];
+const METHODS = ['card', 'upi', 'credit_note', 'advance', 'gift_voucher'];
 const amtEl = (m) => document.querySelector(`.t-amt[data-method="${m}"]`);
 const refEl = (m) => document.querySelector(`.t-ref[data-method="${m}"]`);
 const noteEl = (m) => document.querySelector(`.t-note[data-method="${m}"]`);
 const num = (el) => parseFloat(el && el.value) || 0;
 
 // ---- store credit and advances: what is left on them ------------------------
-const left = {credit_note: null, advance: null};
-const leftErr = {credit_note: '', advance: ''};
+const left = {credit_note: null, advance: null, gift_voucher: null};
+const leftErr = {credit_note: '', advance: '', gift_voucher: ''};
+const VOUCHER_WORD = {credit_note: 'store credit', advance: 'advance', gift_voucher: 'gift voucher'};
+async function lookupGiftVoucher(){
+  const code = refEl('gift_voucher').value.trim();
+  left.gift_voucher = null; leftErr.gift_voucher = '';
+  if (code){
+    try {
+      const j = await (await fetch(`${SHOP_ROOT}/pos/api/gift-voucher?code=${encodeURIComponent(code)}`)).json();
+      if (j.ok){ left.gift_voucher = j.balance; refEl('gift_voucher').value = j.number; }
+      else leftErr.gift_voucher = j.error;
+    } catch (err){ leftErr.gift_voucher = 'Could not check the gift voucher: ' + err; }
+  }
+  paint();
+}
 async function lookupCreditNote(){
   const code = refEl('credit_note').value.trim();
   left.credit_note = null; leftErr.credit_note = '';
@@ -236,7 +250,7 @@ function paint(){
   $('rBalLabel').innerText = f.balance > 0 ? 'Balance to pay' : 'Balance';
   $('rBalance').style.color = f.balance > 0.005 ? '#BE123C' : 'var(--brand-dark)';
   $('rChange').innerText = fmt(f.change);
-  ['credit_note', 'advance'].forEach((m) => {
+  ['credit_note', 'advance', 'gift_voucher'].forEach((m) => {
     const el = noteEl(m);
     if (leftErr[m]){ el.style.color = '#BE123C'; el.innerText = leftErr[m]; }
     else if (left[m] !== null){ el.style.color = 'var(--brand-dark)'; el.innerText = `${fmt(left[m])} available.`; }
@@ -247,9 +261,10 @@ function paint(){
   else if (f.balance > 0.005) msg = `${fmt(f.balance)} still to be paid.`;
   for (const r of f.other){
     if (r.method === 'credit_note' && !r.reference) msg = 'Enter the credit note number to spend it.';
-    else if ((r.method === 'credit_note' || r.method === 'advance') && leftErr[r.method]) msg = leftErr[r.method];
+    else if (r.method === 'gift_voucher' && !r.reference) msg = 'Enter the gift voucher number to spend it.';
+    else if (VOUCHER_WORD[r.method] && leftErr[r.method]) msg = leftErr[r.method];
     else if (left[r.method] !== null && left[r.method] !== undefined && r.amount > left[r.method] + 0.005)
-      msg = `Only ${fmt(left[r.method])} ${r.method === 'credit_note' ? 'store credit' : 'advance'} is available.`;
+      msg = `Only ${fmt(left[r.method])} ${VOUCHER_WORD[r.method]} is available.`;
   }
   $('sWarn').innerText = msg;
   $('billBtn').disabled = !!msg;
@@ -272,6 +287,7 @@ document.querySelectorAll('.t-rest').forEach((b) => b.onclick = () => {
 });
 refEl('credit_note').addEventListener('change', lookupCreditNote);
 refEl('advance').addEventListener('change', lookupAdvance);
+refEl('gift_voucher').addEventListener('change', lookupGiftVoucher);
 
 // ---- settle it --------------------------------------------------------------
 $('billBtn').onclick = async () => {

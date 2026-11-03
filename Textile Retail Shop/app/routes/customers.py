@@ -4,10 +4,11 @@ from flask import Blueprint, render_template, request, redirect, url_for, flash,
 from flask_login import current_user, login_required
 from sqlalchemy import func
 
-from app import db, messaging, places, vouchers
+from app import crm, db, messaging, places, vouchers
 from app.paging import paged
-from app.models import (Customer, CustomerAdvance, CustomerFeedback, Invoice,
-                        LoyaltyTxn, MESSAGE_KINDS, PAYMENT_METHODS, ScheduledMessage)
+from app.models import (Customer, CustomerAdvance, CustomerFeedback, CustomerOrder, Invoice,
+                        LoyaltyTxn, MESSAGE_KINDS, PAYMENT_METHODS, PriceCategory,
+                        ScheduledMessage)
 from app.utils import generate_number, role_required
 
 customers_bp = Blueprint("customers", __name__)
@@ -26,41 +27,122 @@ def _date(name):
     return None
 
 
+#: The kinds of customer the master tells apart — the first is the default.
+CUSTOMER_TYPES = ("customer", "wholesale", "corporate", "staff")
+SUPPLY_TYPES = ("B2C", "B2B", "SEZ", "EXPORT")
+GENDERS = ("female", "male", "other")
+
+
 def _fill(c):
-    c.name = request.form["name"].strip()
-    c.phone = request.form.get("phone", "").strip()
-    c.email = request.form.get("email", "").strip()
-    c.address = request.form.get("address", "")
-    c.gstin = request.form.get("gstin", "").strip()
-    c.state_code = request.form.get("state_code", "33").strip()
+    f = request.form
+    c.name = f["name"].strip()
+    c.phone = f.get("phone", "").strip()
+    c.email = f.get("email", "").strip()
+    c.address = f.get("address", "")
+    c.gstin = f.get("gstin", "").strip()
+    c.state_code = f.get("state_code", "33").strip() or "33"
     c.dob = _date("dob")
     c.anniversary = _date("anniversary")
+    # the CRM master — every field optional but the name
+    c.customer_type = f.get("customer_type") if f.get("customer_type") in CUSTOMER_TYPES else "customer"
+    c.category = crm.text("category", 64)
+    c.code = crm.text("code", 32)
+    c.alt_phone = crm.text("alt_phone", 32)
+    c.billing_name = crm.text("billing_name", 128)
+    c.gender = f.get("gender") if f.get("gender") in GENDERS else None
+    c.married = bool(f.get("married"))
+    c.kids_boys = crm.form_int("kids_boys", 0)
+    c.kids_girls = crm.form_int("kids_girls", 0)
+    c.loyalty_card = crm.text("loyalty_card", 32)
+    c.supply_type = f.get("supply_type") if f.get("supply_type") in SUPPLY_TYPES else None
+    c.tan = crm.text("tan", 16)
+    c.pan = (crm.text("pan", 16) or "").upper() or None
+    c.credit_allowed = bool(f.get("credit_allowed"))
+    c.credit_days = crm.form_int("credit_days") if c.credit_allowed else None
+    c.credit_limit = crm.form_float("credit_limit") if c.credit_allowed else None
+    for col, n in (("city", 64), ("district", 64), ("area", 64), ("pincode", 12), ("state", 64),
+                   ("country", 64), ("religion", 32), ("customer_group", 64),
+                   ("bank_account_name", 128), ("bank_account_no", 32), ("bank_ifsc", 16)):
+        setattr(c, col, crm.text(col, n))
+    c.registered_location_id = f.get("registered_location_id", type=int) or None
+    c.price_category_id = f.get("price_category_id", type=int) or None
+    c.loyalty_disabled = bool(f.get("loyalty_disabled"))
+    c.inactive = not f.get("active")
+    if f.get("approved"):
+        c.awaiting_approval = False
+
+
+def _clash(c):
+    """Another customer already holding this mobile, loyalty card or code — or None."""
+    for col, val, what in ((Customer.phone, c.phone, "mobile number"),
+                           (Customer.loyalty_card, c.loyalty_card, "loyalty card"),
+                           (Customer.code, c.code, "customer code")):
+        if not val:
+            continue
+        with db.session.no_autoflush:
+            other = Customer.query.filter(col == val, Customer.id != (c.id or 0)).first()
+        if other:
+            return f"{other.name} already has the {what} {val}."
+    return None
+
+
+def _form(customer):
+    return render_template("customers/form.html", customer=customer,
+                           types=CUSTOMER_TYPES, supply_types=SUPPLY_TYPES, genders=GENDERS,
+                           categories=crm.customer_categories(), locations=crm.locations(),
+                           price_categories=PriceCategory.query.filter_by(active=True)
+                           .order_by(PriceCategory.name).all(),
+                           groups=crm.distinct(Customer.customer_group),
+                           religions=crm.distinct(Customer.religion),
+                           cities=crm.distinct(Customer.city), areas=crm.distinct(Customer.area),
+                           states=crm.distinct(Customer.state))
 
 
 @customers_bp.route("/")
 @login_required
 def list_customers():
     q = request.args.get("q", "").strip()
+    category = request.args.get("category", "").strip()
+    show = request.args.get("show", "")
     query = Customer.query
     if q:
         query = query.filter(
-            (Customer.name.ilike(f"%{q}%")) | (Customer.phone.ilike(f"%{q}%")) | (Customer.email.ilike(f"%{q}%"))
+            (Customer.name.ilike(f"%{q}%")) | (Customer.phone.ilike(f"%{q}%"))
+            | (Customer.email.ilike(f"%{q}%")) | (Customer.code.ilike(f"%{q}%"))
+            | (Customer.loyalty_card.ilike(f"%{q}%")) | (Customer.alt_phone.ilike(f"%{q}%"))
         )
+    if category:
+        query = query.filter(Customer.category == category)
+    if show == "pending":
+        query = query.filter(Customer.awaiting_approval.is_(True))
+    elif show == "inactive":
+        query = query.filter(Customer.inactive.is_(True))
+    elif show != "all":
+        query = query.filter(crm.active_customers())
     page = paged(query.order_by(Customer.name, Customer.id))     # 150K customers
-    return render_template("customers/list.html", customers=page.items, page=page, q=q)
+    pending = Customer.query.filter(Customer.awaiting_approval.is_(True)).count()
+    return render_template("customers/list.html", customers=page.items, page=page, q=q,
+                           category=category, show=show, pending=pending,
+                           categories=crm.customer_categories())
 
 
 @customers_bp.route("/new", methods=["GET", "POST"])
 @login_required
 def new_customer():
     if request.method == "POST":
-        c = Customer()
+        c = Customer(source="counter")
         _fill(c)
+        problem = _clash(c)
+        if problem:
+            flash(problem + " Open that customer instead, or change it.", "danger")
+            return _form(c)
         db.session.add(c)
+        db.session.flush()
+        c.code = c.code or c.card_code
         db.session.commit()
-        flash("Customer added.", "success")
-        return redirect(url_for("customers.list_customers"))
-    return render_template("customers/form.html", customer=None)
+        flash(f"Customer {c.name} added as {c.code}.", "success")
+        return redirect(url_for("customers.view_customer", cid=c.id))
+    return _form(None)
 
 
 @customers_bp.route("/<int:cid>")
@@ -74,9 +156,11 @@ def view_customer(cid):
                 .order_by(CustomerAdvance.created_at.desc()).all()]
     feedback = (CustomerFeedback.query.filter_by(customer_id=cid)
                 .order_by(CustomerFeedback.created_at.desc()).limit(20).all())
+    orders = (CustomerOrder.query.filter_by(customer_id=cid)
+              .order_by(CustomerOrder.id.desc()).limit(20).all())
     return render_template("customers/detail.html", customer=c, invoices=invoices, txns=txns,
                            advances=advances, advance_balance=round(sum(b for _, b in advances), 2),
-                           feedback=feedback, methods=PAYMENT_METHODS)
+                           feedback=feedback, orders=orders, methods=PAYMENT_METHODS)
 
 
 @customers_bp.route("/<int:cid>/card")
@@ -93,10 +177,16 @@ def edit_customer(cid):
     c = Customer.query.get_or_404(cid)
     if request.method == "POST":
         _fill(c)
+        problem = _clash(c)
+        if problem:
+            db.session.rollback()
+            flash(problem, "danger")
+            return redirect(url_for("customers.edit_customer", cid=cid))
+        c.code = c.code or c.card_code
         db.session.commit()
         flash("Customer updated.", "success")
         return redirect(url_for("customers.view_customer", cid=cid))
-    return render_template("customers/form.html", customer=c)
+    return _form(c)
 
 
 # ---------------------------------------------------------------------------
