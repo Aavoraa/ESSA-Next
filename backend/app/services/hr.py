@@ -364,6 +364,21 @@ def save_master(db, kind, data, mid=None):
                                                 M.HrDepartment.id != (mid or 0)).first()
         if clash:
             raise ValueError(f"There is already a department called {clash.name}")
+    if kind == "designations":
+        same = db.query(M.HrDesignation).filter(func.lower(M.HrDesignation.name) == x.name.strip().lower(),
+                                                M.HrDesignation.id != (mid or 0))
+        same = (same.filter(M.HrDesignation.department_id == x.department_id) if x.department_id
+                else same.filter(M.HrDesignation.department_id.is_(None)))
+        clash = same.first()
+        if clash:
+            dep = db.get(M.HrDepartment, x.department_id) if x.department_id else None
+            raise ValueError(f"There is already a designation called {clash.name}" + (f" in {dep.name}" if dep else ""))
+    if kind == "shifts":
+        clash = db.query(M.HrShift).filter(func.lower(M.HrShift.name) == x.name.strip().lower(),
+                                           M.HrShift.id != (mid or 0)).first()
+        if clash:
+            raise ValueError(f"There is already a shift called {clash.name}")
+    x.name = x.name.strip()
     if not mid:
         db.add(x)
     db.flush()

@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from .. import models
 from ..database import get_db
 from ..services import hr as svc
+from ..services import hr_read
 
 router = APIRouter(prefix="/api/hr", tags=["hr"])
 
@@ -168,6 +169,19 @@ def edit_contract(eid: int, cid: int, body: Dict, db: Session = Depends(get_db))
 def del_contract(eid: int, cid: int, db: Session = Depends(get_db)):
     _do(db, svc.delete_contract, db, eid, cid)
     return {"deleted": True}
+
+
+@router.post("/read-document")
+async def read_document(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """An ID proof, letter or resume read into employee-form fields. Nothing is
+    stored: the screen shows what was read and files the document on saving."""
+    raw = await file.read()
+    try:
+        return hr_read.read_document(db, raw, file.filename)
+    except ValueError as e:
+        _fail(e)
+    except Exception as e:                       # the model or the network
+        raise HTTPException(502, f"The document could not be read ({type(e).__name__}) — check the Claude key in Settings")
 
 
 @router.post("/employees/{eid}/documents")
