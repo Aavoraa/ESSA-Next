@@ -14,6 +14,7 @@
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { api } from './api.js'
+import { Hourglass, Loading } from './Loader.jsx'
 import { Stat, DateField, money, fmtDate, Icon } from './App.jsx'
 import {
   FinPage, F, Sel, CheckList, DateRange, Empty, Modal, Badge, useRun, downloadCsv, errText,
@@ -307,7 +308,7 @@ function HrDashboard({ toast, go }) {
   const load = useCallback(() => api.hrGet('dashboard').then(setD).catch((e) => toast(errText(e), 'err')), [toast])
   useEffect(() => { load() }, [load])
   const open = (k) => go && go(k)
-  if (!d) return <HrPage title="HR Dashboard"><Empty>Reading the people…</Empty></HrPage>
+  if (!d) return <HrPage title="HR Dashboard"><Loading>Reading the people…</Loading></HrPage>
   const a = d.attendance
   const segs = [['P', a.P + a.OD], ['HD', a.HD], ['L', a.L], ['A', a.A], ['WO', a.WO + a.H], ['', a['']]]
   const total = segs.reduce((s, [, v]) => s + v, 0) || 1
@@ -455,7 +456,7 @@ function Employees({ toast }) {
         <div className="small muted fin-note">Double-click a row to open the record: contracts, documents, role history,
           leave and payslips are all on it.</div>
       </>}>
-      {rows === null ? <Empty>Reading the employees…</Empty> : rows.length === 0 ? (
+      {rows === null ? <Loading>Reading the employees…</Loading> : rows.length === 0 ? (
         <Empty>Nobody matches. <button className="btn" onClick={() => setOpen('new')}>Add an employee</button></Empty>
       ) : (
         <div className="tablewrap fin-scroll"><table className="items fin-table">
@@ -500,7 +501,7 @@ function StoreImport({ toast, onClose, onDone }) {
       foot={<><span className="small muted">Each is linked to their Store login: their check-ins become attendance and their bills their incentive.</span>
         <div className="spacer" /><button className="btn" onClick={onClose}>Cancel</button>
         <button className="btn primary" disabled={busy || !pick.length} onClick={go}>{busy ? 'Adding…' : `Add ${pick.length || ''}`}</button></>}>
-      {!st ? <Empty>Reading the Store…</Empty> : !st.available ? <Empty>The Store's database cannot be read from here.</Empty> : (
+      {!st ? <Loading>Reading the Store…</Loading> : !st.available ? <Empty>The Store's database cannot be read from here.</Empty> : (
         <>
           <CheckList title={`Store logins not yet employees (${free.length})`} height={320}
             items={free.map((r) => ({ value: r.username, label: `${r.name} · ${r.username} · ${r.role}${r.salary ? ' · ' + rs0(r.salary) : ''}` }))}
@@ -929,7 +930,7 @@ function DocReader({ f, o, reads, setReads, onApply, toast }) {
               <div className="hr-readdocbody">
                 <div className="hr-readdoctop">
                   <span className="hr-readdocname" title={r.file.name}>{r.file.name}</span>
-                  <span className="small muted">{r.status === 'reading' ? 'Reading…' : r.status === 'done' ? `${Object.keys(r.result.fields).length} read` : r.status === 'unread' ? 'not read' : ''}</span>
+                  <span className="small muted">{r.status === 'reading' ? <><Hourglass size={13} /> Reading…</> : r.status === 'done' ? `${Object.keys(r.result.fields).length} read` : r.status === 'unread' ? 'not read' : ''}</span>
                   <button type="button" className="hr-readx" title="Leave this one out" aria-label={`Remove ${r.file.name}`} onClick={() => remove(r)}><Icon name="x" size={13} /></button>
                 </div>
                 {r.status === 'error' ? <div className="small hr-bad">{r.error}</div>
@@ -1095,7 +1096,7 @@ function EmpLeave({ e }) {
           <small className="muted">taken this year {b.taken_this_year}</small>
         </div>))}</div>
       <div className="fin-sidehead" style={{ marginTop: 14 }}>Every day added and taken</div>
-      {!ledger ? <Empty>Reading…</Empty> : ledger.length === 0 ? <Empty>Nothing yet — run the month's accrual on Leave.</Empty> : (
+      {!ledger ? <Loading>Reading…</Loading> : ledger.length === 0 ? <Empty>Nothing yet — run the month's accrual on Leave.</Empty> : (
         <div className="tablewrap"><table className="items fin-table">
           <thead><tr><th>Date</th><th>Leave</th><th>What</th><th className="r">Days</th><th className="r">Balance</th><th>Note</th></tr></thead>
           <tbody>{ledger.map((x) => (
@@ -1112,7 +1113,7 @@ function EmpLeave({ e }) {
 function EmpSlips({ e, toast }) {
   const [rows, setRows] = useState(null)
   useEffect(() => { api.hrGet(`employees/${e.id}/payslips`).then(setRows).catch(() => setRows([])) }, [e.id])
-  return !rows ? <Empty>Reading…</Empty> : rows.length === 0 ? <Empty>No payslips yet.</Empty> : (
+  return !rows ? <Loading>Reading…</Loading> : rows.length === 0 ? <Empty>No payslips yet.</Empty> : (
     <div className="tablewrap"><table className="items fin-table">
       <thead><tr><th>Month</th><th>Status</th><th className="r">Paid days</th><th className="r">Gross</th><th className="r">Deductions</th><th className="r">Net</th><th /></tr></thead>
       <tbody>{rows.map((s) => (
@@ -1286,7 +1287,7 @@ function Attendance({ toast }) {
         <div className="small muted fin-note">Click a day to mark it. Times entered work out late arrival and overtime from the
           person's shift. Days nobody marked count as {'present'} on payroll unless HR Settings says otherwise.</div>
       </>}>
-      {!d ? <Empty>Reading the register…</Empty> : d.rows.length === 0 ? <Empty>Nobody employed in this month.</Empty> : (
+      {!d ? <Loading>Reading the register…</Loading> : d.rows.length === 0 ? <Empty>Nobody employed in this month.</Empty> : (
         <div className="tablewrap fin-scroll hr-attwrap"><table className="items hr-att">
           <thead><tr><th className="sticky">Employee</th>
             {d.days.map((x) => <th key={x.date} className={(x.holiday ? 'hol ' : '') + (x.today ? 'today ' : '') + (x.dow === 'Su' ? 'sun' : '')}
@@ -1481,7 +1482,7 @@ function Shifts({ toast }) {
           [(r) => `${r.grace_minutes} min`, 'Grace'], [(r) => `${r.full_day_hours} h / ${r.half_day_hours} h`, 'Full / half day'],
           [(r) => `after ${r.ot_after_minutes} min`, 'Overtime'], ['employees', 'People']]}
         fields={masterDefs(o).shifts.fields} blank={SHIFT_BLANK} />
-        : !d ? <Empty>Reading the roster…</Empty> : d.rows.length === 0 ? <Empty>Nobody to roster.</Empty> : (
+        : !d ? <Loading>Reading the roster…</Loading> : d.rows.length === 0 ? <Empty>Nobody to roster.</Empty> : (
           <div className="tablewrap fin-scroll"><table className="items hr-roster">
             <thead><tr><th style={{ width: 30 }}><input type="checkbox" checked={pick.length === d.rows.length}
               onChange={() => setPick(pick.length === d.rows.length ? [] : d.rows.map((r) => r.id))} aria-label="Everyone" /></th>
@@ -1524,7 +1525,7 @@ function MasterTable({ kind, cols, fields, blank, toast, onChange, noun }) {
     <>
       <div className="hr-mhead"><span className="small muted">{rows ? plural(rows.length, noun) : ''}</span>
         <button className="btn primary sm" onClick={() => setEdit({ ...blank })}><Icon name="plus" size={13} /> Add {noun}</button></div>
-      {!rows ? <Empty>Reading…</Empty> : rows.length === 0 ? <Empty>None yet.</Empty> : (
+      {!rows ? <Loading>Reading…</Loading> : rows.length === 0 ? <Empty>None yet.</Empty> : (
         <div className="tablewrap fin-scroll"><table className="items fin-table">
           <thead><tr>{cols.map(([, l]) => <th key={l}>{l}</th>)}<th /></tr></thead>
           <tbody>{rows.map((x) => (
@@ -1570,7 +1571,7 @@ function Overtime({ toast }) {
         <div className="small muted fin-note">Overtime is time worked past a full day on the person's shift, once it passes the
           shift's “overtime after” minutes. Only approved hours are paid, at the rate in HR Settings.</div>
       </>}>
-      {!rows ? <Empty>Reading…</Empty> : rows.length === 0 ? <Empty>No overtime here.</Empty> : (
+      {!rows ? <Loading>Reading…</Loading> : rows.length === 0 ? <Empty>No overtime here.</Empty> : (
         <div className="tablewrap fin-scroll"><table className="items fin-table">
           <thead><tr><th style={{ width: 30 }}><input type="checkbox" checked={pick.length === rows.length}
             onChange={() => setPick(pick.length === rows.length ? [] : rows.map((r) => r.id))} aria-label="All" /></th>
@@ -1628,7 +1629,7 @@ function Leave({ toast }) {
       </> : null}>
       <Tabs tabs={[['requests', 'Requests', f.status === 'pending' ? pending : 0], ['balances', 'Balances'], ['calendar', 'Calendar'], ['accrual', 'Accrual & year end']]}
         value={tab} onChange={setTab} />
-      {tab === 'requests' && (!rows ? <Empty>Reading…</Empty> : rows.length === 0 ? <Empty>No leave requests here.</Empty> : (
+      {tab === 'requests' && (!rows ? <Loading>Reading…</Loading> : rows.length === 0 ? <Empty>No leave requests here.</Empty> : (
         <div className="tablewrap fin-scroll"><table className="items fin-table">
           <thead><tr><th>No</th><th>Employee</th><th>Leave</th><th>Dates</th><th className="r">Days</th><th>Reason</th><th>Status</th><th /></tr></thead>
           <tbody>{rows.map((r) => (
@@ -1709,7 +1710,7 @@ function LeaveBalances({ toast }) {
   return (
     <>
       <div className="fin-toolbar flat"><F label="Employee" style={{ minWidth: 300 }}><Sel value={eid} onChange={setEid} placeholder="Choose someone" options={empOpts(o)} /></F></div>
-      {!eid ? <Empty>Choose someone to see their balances and every day added and taken.</Empty> : !bal ? <Empty>Reading…</Empty> : (
+      {!eid ? <Empty>Choose someone to see their balances and every day added and taken.</Empty> : !bal ? <Loading>Reading…</Loading> : (
         <>
           <div className="hr-leavecards">{bal.map((b) => (
             <div key={b.leave_type_id} className="hr-leavecard" style={{ '--lc': b.color }}>
@@ -1819,7 +1820,7 @@ function Advances({ toast }) {
         <div className="small muted fin-note">An advance is paid out as a Payment voucher in the books. Each month's payroll
           takes back its instalment, as far as the salary allows; a cash repayment can be taken here.</div>
       </>}>
-      {!rows ? <Empty>Reading…</Empty> : rows.length === 0 ? <Empty>No advances here.</Empty> : (
+      {!rows ? <Loading>Reading…</Loading> : rows.length === 0 ? <Empty>No advances here.</Empty> : (
         <div className="tablewrap fin-scroll"><table className="items fin-table">
           <thead><tr><th>No</th><th>Employee</th><th>Kind</th><th>Given</th><th className="r">Amount</th><th className="r">Instalment</th>
             <th>From</th><th className="r">Recovered</th><th className="r">Balance</th><th>Voucher</th><th>Status</th><th /></tr></thead>
@@ -1947,7 +1948,7 @@ function Incentives({ toast }) {
           Every active scheme a line matches pays on it. A month's payroll adds the month's incentive to each payslip by itself.</div>
       </> : null}>
       <Tabs tabs={[['calc', 'Who earned what'], ['schemes', 'Schemes', schemes?.filter((s) => s.active).length]]} value={tab} onChange={setTab} />
-      {tab === 'schemes' && (!schemes ? <Empty>Reading…</Empty> : schemes.length === 0 ? (
+      {tab === 'schemes' && (!schemes ? <Loading>Reading…</Loading> : schemes.length === 0 ? (
         <Empty>No schemes yet. A scheme pays a % of what is sold, a fixed amount a piece, or a % that rises with the month's
           sales — on everything, or only on chosen categories, brands, barcodes, price bands or stock older than so many days.
           <button className="btn" onClick={() => setEdit({ ...BLANK_SCHEME })}>Make one</button></Empty>
@@ -1966,7 +1967,7 @@ function Incentives({ toast }) {
           </div>
         ))}</div>
       ))}
-      {tab === 'calc' && (!d ? <Empty>Reading the till…</Empty> : !d.available ? <Empty>The Store's database cannot be read from here.</Empty> : (
+      {tab === 'calc' && (!d ? <Loading>Reading the till…</Loading> : !d.available ? <Empty>The Store's database cannot be read from here.</Empty> : (
         <>
           <div className="fin-stats"><Stat label="Sales by linked staff" value={rs0(d.totals.sales)} />
             <Stat label="Incentive" value={rs0(d.totals.incentive)} accent="money" />
@@ -2106,7 +2107,7 @@ function Payroll({ toast }) {
         <div className="small muted fin-note">Paid days come from Attendance and Leave; overtime from approved hours; incentive from
           the Store's bills; advances from their instalments. Bonus, arrears, a deduction or a hold are added on a payslip.</div>
       </>}>
-      {!d ? <Empty>Reading…</Empty> : !d.status ? (
+      {!d ? <Loading>Reading…</Loading> : !d.status ? (
         <Empty>{monthName(month)} has not been worked out. <button className="btn primary" disabled={busy} onClick={() => act('compute', '✓ Worked out')}>Work it out</button></Empty>
       ) : (
         <>
@@ -2328,9 +2329,9 @@ function Performance({ toast }) {
         <div className="small muted fin-note">A KPI measured as Store sales or bills reads its actual from the person's bills in the
           cycle's dates; attendance % from their register. The score weighs each goal's achievement (capped at 150%) by its weight.</div>
       </>}>
-      {!cycles ? <Empty>Reading…</Empty> : !cid ? <Empty>Start a review cycle — a quarter, a half or a year — then give people goals and KPIs.
+      {!cycles ? <Loading>Reading…</Loading> : !cid ? <Empty>Start a review cycle — a quarter, a half or a year — then give people goals and KPIs.
         <button className="btn" onClick={() => setNewCycle({ name: '', period_from: monthStart(), period_to: todayIso(), status: 'open' })}>New cycle</button></Empty>
-        : !d ? <Empty>Reading the cycle…</Empty> : d.rows.length === 0 ? <Empty>Nobody has goals in this cycle yet. Add a goal or KPI to begin.</Empty> : (
+        : !d ? <Loading>Reading the cycle…</Loading> : d.rows.length === 0 ? <Empty>Nobody has goals in this cycle yet. Add a goal or KPI to begin.</Empty> : (
           <div className="tablewrap fin-scroll"><table className="items fin-table">
             <thead><tr><th>Employee</th><th>Goals &amp; KPIs</th><th className="r">Score</th><th>Suggested</th><th>Rating</th><th>Increment</th><th>Status</th><th /></tr></thead>
             <tbody>{d.rows.map((r) => (
@@ -2532,7 +2533,7 @@ function HrReports({ toast, report }) {
           options={o.departments.map((x) => ({ value: x.id, label: x.name }))} /></F>}
         {def[3].includes('location') && <F label="Location"><Sel value={p.location} onChange={set('location')} placeholder="All" options={o.locations} /></F>}
       </>}>
-      {!d ? <Empty>Reading…</Empty> : d.rows.length === 0 ? <Empty>Nothing to show for these filters.</Empty> : (
+      {!d ? <Loading>Reading…</Loading> : d.rows.length === 0 ? <Empty>Nothing to show for these filters.</Empty> : (
         <div className="tablewrap fin-scroll"><table className="items fin-table">
           <thead><tr>{d.columns.map((c) => <th key={c} className={isNum(c) ? 'r' : ''}>{c}</th>)}</tr></thead>
           <tbody>{d.rows.map((r, i) => (
@@ -2585,7 +2586,7 @@ function StatutorySettings({ toast }) {
   const [s, setS] = useState(null)
   const [busy, run] = useRun(toast)
   useEffect(() => { api.hrGet('settings').then(setS).catch((e) => toast(errText(e), 'err')) }, [toast])
-  if (!s) return <Empty>Reading…</Empty>
+  if (!s) return <Loading>Reading…</Loading>
   const set = (k) => (v) => setS({ ...s, [k]: v?.target ? (v.target.type === 'checkbox' ? v.target.checked : v.target.value) : v })
   const save = async () => {
     const body = { ...s }

@@ -17,6 +17,7 @@
 // ==========================================================================
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { api } from './api.js'
+import { Loading } from './Loader.jsx'
 import { Section, Stat, DateField, SearchBox, money, fmtDate, Icon } from './App.jsx'
 
 // ---------------------------------------------------------------- helpers
@@ -325,7 +326,7 @@ function StatementModal({ ledger, onClose }) {
           <Stat label="Closing" value={drcr(st.closing)} accent="money" />
         </div>}
       </div>
-      {!st ? <Empty>Reading the ledger…</Empty> : st.rows.length === 0 ? <Empty>No entries in this period.</Empty> : (
+      {!st ? <Loading>Reading the ledger…</Loading> : st.rows.length === 0 ? <Empty>No entries in this period.</Empty> : (
         <div className="tablewrap"><table className="items fin-table">
           <thead><tr><th>Date</th><th>Voucher</th><th>Type</th><th>Narration</th>
             <th className="r">Debit</th><th className="r">Credit</th><th className="r">Balance</th></tr></thead>
@@ -376,7 +377,7 @@ function ManageLedger({ toast }) {
         <F label="Name" style={{ flex: 1, maxWidth: 360 }}><input value={name} onChange={(e) => setName(e.target.value)}
           placeholder="Enter ledger name" /></F>
       </div>
-      {rows === null ? <Empty>Reading the ledgers…</Empty> : rows.length === 0 ? (
+      {rows === null ? <Loading>Reading the ledgers…</Loading> : rows.length === 0 ? (
         <Empty>No ledger matches. <button className="btn" onClick={() => setEdit({ group })}>Create one</button></Empty>
       ) : (
         <div className="tablewrap fin-scroll"><table className="items fin-table">
@@ -587,7 +588,7 @@ function VoucherEntry({ toast }) {
         <div className="field fin-go"><label>&nbsp;</label>
           <button className="btn primary" onClick={load}><Icon name="search" size={14} /> Search</button></div>
       </div>
-      {rows === null ? <Empty>Reading the vouchers…</Empty> : rows.length === 0
+      {rows === null ? <Loading>Reading the vouchers…</Loading> : rows.length === 0
         ? <Empty>No vouchers for these filters. Widen the dates, or press <b>New Voucher</b>.</Empty>
         : <VoucherTable rows={rows} onOpen={setOpen} onCancel={cancel} />}
       {open && <VoucherForm init={open.id ? open : null} toast={toast} onClose={() => setOpen(null)}
@@ -632,7 +633,7 @@ function Daybook({ toast }) {
       </>}>
       {byType.length > 0 && <div className="fin-stats">
         {byType.map(([k, v]) => <Stat key={k} label={k} value={'₹ ' + money(v)} />)}</div>}
-      {rows === null ? <Empty>Reading the daybook…</Empty> : rows.length === 0 ? <Empty>Nothing was entered on these days.</Empty>
+      {rows === null ? <Loading>Reading the daybook…</Loading> : rows.length === 0 ? <Empty>Nothing was entered on these days.</Empty>
         : <VoucherTable rows={rows} onOpen={setOpen} showDayTotals />}
       {open && <VoucherForm init={open} toast={toast} onClose={() => setOpen(null)} onSaved={() => { setOpen(null); load() }} />}
     </FinPage>
@@ -689,7 +690,7 @@ function TrialBalance({ toast }) {
           ['opening', 'Opening'], ['debit', 'Debit'], ['credit', 'Credit'], ['closing_dr', 'Closing Dr'], ['closing_cr', 'Closing Cr']],
         d.groups.flatMap((g) => g.rows.map((r) => ({ ...r, group: g.group }))))}><Icon name="spreadsheet" size={14} /> Export</button></>}
       side={<StatementSide o={o} {...s} onRun={s.run} />}>
-      {!d ? <Empty>Reading the books…</Empty> : (
+      {!d ? <Loading>Reading the books…</Loading> : (
         <>
           <div className="fin-stats">
             <Stat label="Debit (period)" value={'₹ ' + money(d.totals.debit)} />
@@ -759,7 +760,7 @@ function TradingAccount({ toast }) {
   return (
     <FinPage title="Trading Account" sub={d ? `Gross ${d.gross_profit >= 0 ? 'profit' : 'loss'} ₹${money(Math.abs(d.gross_profit))}` : ''}
       side={<StatementSide o={o} {...s} stock onRun={s.run} />}>
-      {!d ? <Empty>Reading the books…</Empty> : (
+      {!d ? <Loading>Reading the books…</Loading> : (
         <div className="tform">
           <TSide title="Dr · Purchases & direct expenses" groups={d.expense} onLedger={setStmt} total={d.total}
             extra={[{ label: 'Opening stock', amount: d.opening_stock },
@@ -783,7 +784,7 @@ function ProfitLoss({ toast }) {
   return (
     <FinPage title="Profit & Loss Account" sub={d ? `Net ${d.net_profit >= 0 ? 'profit' : 'loss'} ₹${money(Math.abs(d.net_profit))}` : ''}
       side={<StatementSide o={o} {...s} stock onRun={s.run} />}>
-      {!d ? <Empty>Reading the books…</Empty> : (
+      {!d ? <Loading>Reading the books…</Loading> : (
         <>
           <div className="fin-stats">
             <Stat label="Gross profit" value={'₹ ' + money(d.gross_profit)} accent={d.gross_profit < 0 ? 'warn' : 'money'} />
@@ -812,7 +813,7 @@ function BalanceSheet({ toast }) {
   return (
     <FinPage title="Balance Sheet" sub={d ? `As on ${fmtDate(d.as_on)}${d.difference ? ` · out by ₹${money(Math.abs(d.difference))}` : ' · tallies'}` : ''}
       side={<StatementSide o={o} {...s} asOn stock onRun={s.run} />}>
-      {!d ? <Empty>Reading the books…</Empty> : (
+      {!d ? <Loading>Reading the books…</Loading> : (
         <>
           {d.difference !== 0 && <div className="fin-warn">The two sides differ by ₹{money(Math.abs(d.difference))}. That is
             almost always an opening balance that does not balance — see <b>Opening Balance</b>.</div>}
@@ -845,7 +846,7 @@ function DailyPL({ toast }) {
         <DateRange from={s.f.date_from} to={s.f.date_to} setFrom={set('date_from')} setTo={set('date_to')} />
         <button className="btn primary block" onClick={s.run}><Icon name="search" size={14} /> Show</button>
       </>}>
-      {!d ? <Empty>Reading the books…</Empty> : (
+      {!d ? <Loading>Reading the books…</Loading> : (
         <>
           <div className="fin-stats">
             <Stat label="Sales" value={'₹ ' + money(d.totals.sales)} />
@@ -883,7 +884,7 @@ function BillsModal({ party, onClose }) {
   return (
     <Modal title={`Pending bills — ${party.party}`} onClose={onClose} wide
       foot={<><div className="spacer" /><button className="btn primary" onClick={onClose}>Close</button></>}>
-      {!d ? <Empty>Reading…</Empty> : (
+      {!d ? <Loading>Reading…</Loading> : (
         <>
           <div className="fin-stats"><Stat label="Pending" value={'₹ ' + money(d.pending)} accent="money" />
             {d.on_account ? <Stat label="On account" value={'₹ ' + money(d.on_account)} /> : null}</div>
@@ -921,7 +922,7 @@ function Outstanding({ toast, side }) {
           onKeyDown={(e) => e.key === 'Enter' && load()} /></F>
         <button className="btn primary block" onClick={load}><Icon name="search" size={14} /> Search</button>
       </>}>
-      {!d ? <Empty>Reading the books…</Empty> : (
+      {!d ? <Loading>Reading the books…</Loading> : (
         <>
           <div className="fin-stats">
             <Stat label={`Total ${title.toLowerCase()}`} value={'₹ ' + money(d.totals.pending)} accent="money" />
@@ -977,7 +978,7 @@ function TdsTransactions({ toast }) {
         <CheckList title="Ledger" items={ledgers.map((L) => ({ value: String(L.id), label: L.name }))} value={f.ledger} onChange={set('ledger')} />
         <DateRange from={f.date_from} to={f.date_to} setFrom={set('date_from')} setTo={set('date_to')} />
       </>}>
-      {!d ? <Empty>Reading…</Empty> : (
+      {!d ? <Loading>Reading…</Loading> : (
         <>
           <div className="fin-stats"><Stat label="TDS" value={'₹ ' + money(d.total)} accent="money" />
             <Stat label="Entries" value={d.rows.length} accent="count" /></div>
@@ -1027,7 +1028,7 @@ function Analyser({ toast }) {
         <F label="Report Mode"><Sel value={f.mode} allowBlank={false} onChange={set('mode')} options={ANALYSER_MODES} /></F>
         <DateRange from={f.date_from} to={f.date_to} setFrom={set('date_from')} setTo={set('date_to')} />
       </>}>
-      {!d ? <Empty>Reading…</Empty> : d.rows.length === 0 ? <Empty>Nothing moved for these filters.</Empty> : (
+      {!d ? <Loading>Reading…</Loading> : d.rows.length === 0 ? <Empty>Nothing moved for these filters.</Empty> : (
         <div className="tablewrap fin-scroll"><table className="items fin-table">
           <thead><tr><th>{head}</th><th className="r">Debit</th><th className="r">Credit</th><th style={{ width: '24%' }}></th><th className="r">Net</th></tr></thead>
           <tbody>{d.rows.map((r) => (
@@ -1062,7 +1063,7 @@ function LoanReconciliation({ toast }) {
         <DateRange from={f.date_from} to={f.as_on} setFrom={(v) => setF({ ...f, date_from: v })} setTo={(v) => setF({ ...f, as_on: v })} />
         <button className="btn primary block" onClick={load}><Icon name="search" size={14} /> Show</button>
       </>}>
-      {!rows ? <Empty>Reading…</Empty> : rows.length === 0 ? (
+      {!rows ? <Loading>Reading…</Loading> : rows.length === 0 ? (
         <Empty>No loan ledgers yet. A loan is a ledger of type <b>Loans (Liability)</b> (money borrowed) or
           <b> Loans &amp; Advances (Asset)</b> (money lent); its instalments are Payment vouchers against it.</Empty>
       ) : (
@@ -1105,7 +1106,7 @@ function GstInbox({ toast }) {
         <F label="Supplier"><input value={f.supplier} onChange={(e) => setF({ ...f, supplier: e.target.value })} placeholder="Name contains…" /></F>
         <button className="btn primary block" onClick={load}><Icon name="search" size={14} /> Search</button>
       </>}>
-      {!d ? <Empty>Reading the purchase register…</Empty> : (
+      {!d ? <Loading>Reading the purchase register…</Loading> : (
         <>
           <div className="fin-stats">
             <Stat label="Invoices" value={d.rows.length} accent="count" />
@@ -1169,7 +1170,7 @@ function OpeningBalance({ toast }) {
       </div>
       {r2(dr - cr) !== 0 && <div className="fin-warn">Debits and credits must be equal before the balance sheet will tally —
         the difference usually belongs in <b>Capital</b>.</div>}
-      {!d ? <Empty>Reading the ledgers…</Empty> : (
+      {!d ? <Loading>Reading the ledgers…</Loading> : (
         <div className="tablewrap fin-scroll"><table className="items fin-table">
           <thead><tr><th>Ledger</th><th>Type</th><th className="r" style={{ width: 160 }}>Debit</th><th className="r" style={{ width: 160 }}>Credit</th></tr></thead>
           <tbody>{shown.map((r) => {
@@ -1224,7 +1225,7 @@ function BankReconciliation({ toast }) {
         <button className="btn primary block" onClick={load}><Icon name="search" size={14} /> Search</button>
       </>}>
       {o.banks.length === 0 ? <Empty>No bank ledgers yet. Create one in <b>Manage Ledger</b> with the type <b>Bank Account</b>.</Empty>
-        : !d ? <Empty>Reading the bank book…</Empty> : (
+        : !d ? <Loading>Reading the bank book…</Loading> : (
         <>
           <div className="fin-stats">
             <Stat label="Opening balance" value={drcr(d.opening)} />
@@ -1296,7 +1297,7 @@ function ChequeBooks({ toast }) {
             <Icon name="plus" size={14} /> Add book</button>
         </>}
       </>}>
-      {!books ? <Empty>Reading…</Empty> : books.length === 0 ? <Empty>No cheque books registered{bank ? ' for this bank' : ''}.</Empty> : books.map((b) => (
+      {!books ? <Loading>Reading…</Loading> : books.length === 0 ? <Empty>No cheque books registered{bank ? ' for this bank' : ''}.</Empty> : books.map((b) => (
         <Section key={b.id} id={'chq.' + b.id} title={`${b.bank} · book ${b.book_no || b.id}`}
           summary={`${b.from_no}–${b.to_no} · ${b.used} issued · ${b.unused} unused · ${b.cancelled} cancelled`}>
           <div className="leafgrid">
@@ -1363,7 +1364,7 @@ function PettyCash({ toast }) {
         <div className="small muted fin-note">Type each day's amount against its ledger. Income adds to the cash ledger, expense takes from it;
           saving writes one Petty Cash voucher per day changed.</div>
       </>}>
-      {!f.cash_ledger_id ? <Empty>Choose the cash ledger this sheet draws on.</Empty> : !sheet ? <Empty>Reading…</Empty>
+      {!f.cash_ledger_id ? <Empty>Choose the cash ledger this sheet draws on.</Empty> : !sheet ? <Loading>Reading…</Loading>
         : sheet.rows.length === 0 ? (
           <Empty>No petty-cash ledgers yet. Press <b>New Ledger</b> and give it a Petty Cash type
             ({o.petty_groups.join(', ')}).</Empty>
@@ -1481,7 +1482,7 @@ function PayeeScreen({ toast, kind }) {
         </div>
         <Stat label="Payable" value={'₹ ' + money(payable)} accent="money" />
       </div>
-      {rows === null ? <Empty>Reading pending entries…</Empty> : rows.length === 0 ? (
+      {rows === null ? <Loading>Reading pending entries…</Loading> : rows.length === 0 ? (
         <Empty>Nothing pending{h.party ? ` for ${h.party}` : ''}. {kind === 'transport'
           ? 'Freight comes from LR Entry — an entry with freight charges shows here until it is paid.'
           : 'Commission comes from LR Entry — an entry with an agent and a commission shows here until it is paid.'}</Empty>
@@ -1586,7 +1587,7 @@ function CreditCollection({ toast }) {
         <Stat label="Allocated" value={money(allocated)} accent={allocated > received + 0.01 ? 'warn' : undefined} />
         <Stat label="On account" value={money(Math.max(0, received - allocated))} />
       </div>
-      {!h.ledger_id ? <Empty>Choose the customer to see what they owe.</Empty> : !bills ? <Empty>Reading…</Empty>
+      {!h.ledger_id ? <Empty>Choose the customer to see what they owe.</Empty> : !bills ? <Loading>Reading…</Loading>
         : bills.bills.length === 0 ? <Empty>No pending bills — anything received goes on account.</Empty> : (
         <div className="tablewrap fin-scroll"><table className="items fin-table fin-entry">
           <thead><tr><th>Bill date</th><th>Voucher</th><th>Bill</th><th className="r">Days</th><th className="r">Amount</th>
@@ -1716,7 +1717,7 @@ function IncentiveReport({ toast }) {
         <div className="small muted fin-note">Incentive is each person's commission % (Store → Staff) on the net value of the lines
           they sold. A line carries the staff ID scanned with it; otherwise the bill's.</div>
       </>}>
-      {!d ? <Empty>Reading the till…</Empty> : !d.available ? <Empty>The store's database is not connected here, so there are no sales to pay on.</Empty> : (
+      {!d ? <Loading>Reading the till…</Loading> : !d.available ? <Empty>The store's database is not connected here, so there are no sales to pay on.</Empty> : (
         <>
           <div className="fin-stats"><Stat label="Sales" value={'₹ ' + money(d.totals.sales)} />
             <Stat label="Pieces" value={money(d.totals.qty)} /><Stat label="Incentive" value={'₹ ' + money(d.totals.incentive)} accent="money" /></div>
@@ -1775,7 +1776,7 @@ function TallyConfiguration({ toast }) {
           </table>
         </Section>
         <div>
-          {!biz ? <Empty>Press <b>Configure</b> beside a company.</Empty> : !cfg ? <Empty>Reading…</Empty> : (
+          {!biz ? <Empty>Press <b>Configure</b> beside a company.</Empty> : !cfg ? <Loading>Reading…</Loading> : (
             <Section id="fin.tally.server" title={`Tally Server — ${biz.name}`}
               actions={<button className="btn primary sm" disabled={busy} onClick={save}>{busy ? 'Saving…' : 'Save'}</button>}>
               <div className="fin-form three">
@@ -1860,7 +1861,7 @@ function TallyIntegration({ toast }) {
       </>}>
       <div className="fin-split wide">
         <div>
-          {rows === null ? <Empty>Reading…</Empty> : rows.length === 0 ? <Empty>No {f.vtype} vouchers in this period.</Empty> : (
+          {rows === null ? <Loading>Reading…</Loading> : rows.length === 0 ? <Empty>No {f.vtype} vouchers in this period.</Empty> : (
             <div className="tablewrap fin-scroll"><table className="items fin-table">
               <thead><tr><th style={{ width: 34 }}><input type="checkbox" checked={allOn}
                 onChange={() => setTicked(allOn ? new Set() : new Set(rows.map((v) => v.id)))} /></th>

@@ -3,6 +3,7 @@ import { api, session, warehouse, setUnauthorizedHandler, swr, readCache } from 
 import { parseDictation, coerceSpoken, dictationTargets } from './voicefill.js'
 import Finance, { FIN_SCREENS, FIN_REPORT_KEYS } from './Finance.jsx'
 import HR, { HR_SCREENS, HR_REPORTS } from './HR.jsx'
+import { Loading, useFrameLoading } from './Loader.jsx'
 
 // ---------- helpers ----------
 const num = (v) => (v === '' || v == null ? null : isNaN(+v) ? v : +v)
@@ -2362,7 +2363,7 @@ function InvoiceStock({ purchaseId, toast, onOpenProduct, bare }) {
   const load = useCallback(() => api.purchaseStock(purchaseId).then(setSt)
     .catch((e) => toast(e.detail || 'Could not read the stock', 'err')), [purchaseId])
   useEffect(() => { setSt(null); load() }, [load])
-  if (!st) return <div className="empty">Loading…</div>
+  if (!st) return <Loading />
   const allIds = st.rows.flatMap((r) => r.unit_ids)
   const printIds = (ids) => {
     if (!ids.length) { toast('No piece codes on this invoice to print', 'err'); return }
@@ -2463,7 +2464,7 @@ function InvoicePage({ sel, toast, onBack, onChanged, onSelect, onOpenProduct })
         ))}</ol>
       </div>
 
-      {!grnRead ? <div className="empty">Loading…</div> : docId ? (
+      {!grnRead ? <Loading /> : docId ? (
         // the invoice and its receipt are one record: one work area, one tab strip
         <div className="invwork">
           <Review docId={docId} toast={toast} onSaved={changed}
@@ -2504,7 +2505,7 @@ function RecordedInvoice({ id, onOpenGrn, onBack }) {
   if (!id) return <div className="empty">
     Select an invoice from the left. These have no uploaded scan — they were recorded as goods receipts.</div>
   if (err) return <div className="empty">{err}</div>
-  if (!p) return <div className="empty">Loading…</div>
+  if (!p) return <Loading />
   const lines = p.lines || []
   const field = (label, v) => <div className="field" style={{ minWidth: 150 }}><label>{label}</label>
     <div style={{ fontWeight: 600, padding: '4px 0' }}>{v ?? '—'}</div></div>
@@ -2705,7 +2706,7 @@ function Review({ docId, onSaved, onCreateGrn, toast, onBack, purchaseId, posted
       </div>
     </div>
   )
-  if (!data) return <div className="empty">Loading…</div>
+  if (!data) return <Loading />
 
   const setPath = (obj, path, val) => {
     const c = structuredClone(obj); const ks = path.split('.'); let o = c
@@ -4897,7 +4898,7 @@ function Inventory({ toast, openProductId, onOpenInvoice }) {
                 way back from a product on the shelf to the bill it arrived on. */}
             <h4 style={{ color: 'var(--muted)', fontSize: 12, textTransform: 'uppercase', margin: '18px 0 8px' }}>
               Came from invoice{(sources || []).length === 1 ? '' : 's'}</h4>
-            {sources === null ? <p className="small">Loading…</p>
+            {sources === null ? <Loading inline />
               : sources.length === 0 ? <p className="small">No receipt on record — stock that predates receipts.</p>
                 : <div className="srclist">{sources.map((x) => (
                   <div key={x.purchase_id} className="srcrow">
@@ -6866,13 +6867,14 @@ function Reports({ toast = () => {}, finance = false, hr = false }) {
               so the shop's sign-in is the one the Store screens already use.
               Every kept report stays mounted and only the chosen one is shown,
               so going back to one is instant and keeps its filters. */}
-          {storeKept.map((k) => (
-            <iframe key={k + ':' + (storeReload[k] || 0)}
-              title={store.reports.find((r) => r.key === k)?.label || 'Store report'}
-              src={'/pos/reports/r/' + encodeURIComponent(k)}
-              style={{ flex: 1, border: 0, width: '100%', minHeight: 0, background: 'var(--bg)',
-                display: k === storeKey ? 'block' : 'none' }} />
-          ))}
+          {storeKept.map((k) => {
+            const label = store.reports.find((r) => r.key === k)?.label || 'Store report'
+            return (
+              <LoadingFrame key={k + ':' + (storeReload[k] || 0)} frameKey={k + ':' + (storeReload[k] || 0)}
+                title={label} src={'/pos/reports/r/' + encodeURIComponent(k)} label={`Running ${label}…`}
+                shown={k === storeKey} />
+            )
+          })}
         </div>
       )}
       {!storeKey && !finKey && (
@@ -10508,7 +10510,7 @@ function MasterScreen({ mkey, onBack, toast }) {
     if (def?.singleton && form === null) setForm(list[0] ? { ...list[0] } : {})
   }, [def, list])   // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (!def) return <div className="empty">Loading…</div>
+  if (!def) return <Loading />
   const data = form?.data || {}
   const setField = (k, v) => setForm({ ...form, data: { ...data, [k]: v } })
   // Several fields at once, from one dictated sentence. Applied in a single
@@ -12949,7 +12951,7 @@ function DsWorksheets({ toast }) {
 
   return (
     <Section id="ds-sheets" title="Clearance worksheets" summary={`${list.length} campaign(s)`}>
-      {busy && !list.length && <div className="empty" style={{ marginTop: 30 }}>Reading…</div>}
+      {busy && !list.length && <Loading style={{ marginTop: 30 }}>Reading…</Loading>}
       {!busy && !list.length && (
         <div className="empty" style={{ marginTop: 30 }}>
           No clearance worksheets yet. Open the <b>Register</b>, select the lines to clear and add them to one.
@@ -14029,7 +14031,7 @@ function Users({ toast, me }) {
         </div>
 
         {err && <div className="empty" style={{ margin: '10px 0' }}>{err}</div>}
-        {busy && !rows.length && <div className="empty" style={{ margin: '10px 0' }}>Loading…</div>}
+        {busy && !rows.length && <Loading style={{ margin: '10px 0' }} />}
 
         {rows.length > 0 && (
           <div className="toolbar" style={{ gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
@@ -15001,7 +15003,7 @@ function ChooseWarehouse({ onEnter, user }) {
         </div>
         {err && <div className="warnbox"><h4>Could not read the warehouses</h4>
           <div className="small" style={{ color: 'var(--text-2)' }}>{err}</div></div>}
-        {rows === null && !err && <div className="empty">Loading…</div>}
+        {rows === null && !err && <Loading />}
         {rows && rows.length === 0 && (
           <div className="empty" style={{ marginTop: 40, lineHeight: 1.7 }}>
             <b>No warehouse is allotted to {user}.</b><br />
@@ -15942,7 +15944,7 @@ function CentralDashboard({ toast, go, onEnter, active = true }) {
           <h4>The dashboard could not be read</h4>
           <div className="small" style={{ color: 'var(--text-2)' }}>{err}</div></div>}
 
-        {!ov ? <div className="empty" style={{ marginTop: 40 }}>Loading…</div> : (
+        {!ov ? <Loading style={{ marginTop: 40 }} /> : (
           <FitPages>
             <div className="dgrid" style={{ marginBottom: 'var(--sp-4)' }}>
               <DashTile label="Total Warehouses" value={t.warehouses ?? 0}
@@ -16077,7 +16079,7 @@ function CentralDashboard({ toast, go, onEnter, active = true }) {
               actions={<button className="btn" style={{ padding: '2px 9px' }}
                 onClick={() => go && go('reports')}
                 title="Open the Sales by Store report">Report →</button>}>
-              {!sales ? <div className="empty" style={{ padding: 20 }}>Loading…</div>
+              {!sales ? <Loading style={{ padding: 20 }} />
                 : !sales.available ? (
                   <div className="warnbox">
                     <h4>No sales figures</h4>
@@ -17056,6 +17058,18 @@ const POS_ITEMS = [POS_HOME, null, ...POS_SCREENS]
 const POS_USER_KEYS = new Set(['pos:counter', 'pos:settlement', 'pos:delivery', 'pos:inventory',
   'pos:customers', 'pos:returns', 'pos:alterations'])
 
+// A Store page in a frame, with the hourglass over it while it opens.
+function LoadingFrame({ title, src, frameKey, label, shown = true }) {
+  const ref = useRef(null)
+  const [opening, onLoad] = useFrameLoading(ref, frameKey)
+  return (
+    <div className="posframe" style={{ display: shown ? 'flex' : 'none' }}>
+      <iframe ref={ref} src={src} title={title} onLoad={onLoad} style={{ background: 'var(--bg)' }} />
+      {opening && <div className="hg-cover"><Loading>{label}</Loading></div>}
+    </div>
+  )
+}
+
 // One frame, keyed on the path so choosing another screen from the menu loads
 // it rather than leaving the frame on whatever it had drifted to.
 function PosScreen({ screen, available, error, warehouse: wh, active = true }) {
@@ -17063,6 +17077,8 @@ function PosScreen({ screen, available, error, warehouse: wh, active = true }) {
   // place — the browser keeps the old page painted until the new one is ready.
   const frame = useRef(null)
   useReshow(active, () => { try { frame.current?.contentWindow?.location.reload() } catch { /* not ours */ } })
+  const frameKey = screen.path + ':' + (wh?.id || '')
+  const [opening, onLoad] = useFrameLoading(frame, frameKey)
   if (available === false) return (
     <div className="empty" style={{ margin: 40, maxWidth: 620 }}>
       <p><b>The POS module is not loaded.</b></p>
@@ -17082,8 +17098,9 @@ function PosScreen({ screen, available, error, warehouse: wh, active = true }) {
   const src = '/pos' + screen.path + (screen.path.includes('?') ? '&' : '?') + 'wh=' + (wh?.id || '')
   return (
     <div className="posframe">
-      <iframe ref={frame} key={screen.path + ':' + (wh?.id || '')} src={src}
+      <iframe ref={frame} key={frameKey} src={src} onLoad={onLoad}
         title={'POS — ' + screen.label} />
+      {opening && <div className="hg-cover"><Loading>Opening {screen.label}…</Loading></div>}
     </div>
   )
 }

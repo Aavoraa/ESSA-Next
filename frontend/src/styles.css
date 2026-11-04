@@ -3670,3 +3670,46 @@ table.hr-roster th.hol { color: var(--att-h); }
 .hr-readfoot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; }
 .hr-good { color: var(--brand); font-weight: 700; }
 .hr-bad { color: var(--danger); }
+
+/* ---------- the hourglass loader (Loader.jsx) ----------
+   Two rounded halves; the "sand" pours from one into the other and the glass
+   turns over. Size, colour and speed are the --uib-* properties. Prefixed hg-
+   so it cannot meet another stylesheet's .container or .half. */
+.hg { --uib-size: 40px; --uib-color: var(--brand, #0B3D2E); --uib-speed: 1.75s; --uib-bg-opacity: .1;
+  position: relative; display: inline-flex; flex-direction: column; flex: none;
+  height: var(--uib-size); width: var(--uib-size); transform: rotate(45deg);
+  animation: hg-rotate calc(var(--uib-speed) * 2) ease-in-out infinite; }
+.hg-half { --uib-half-size: calc(var(--uib-size) * 0.435); position: absolute; display: flex; align-items: center;
+  justify-content: center; width: var(--uib-half-size); height: var(--uib-half-size); overflow: hidden;
+  isolation: isolate; border-radius: 50% 50% calc(var(--uib-size) / 15); }
+.hg-half:first-child { top: 8.25%; left: 8.25%; }
+.hg-half:last-child { bottom: 8.25%; right: 8.25%; transform: rotate(180deg); align-self: flex-end; }
+.hg-half::before { content: ''; position: absolute; inset: 0; background-color: var(--uib-color);
+  opacity: var(--uib-bg-opacity); transition: background-color .3s ease; }
+.hg-half::after { content: ''; position: relative; z-index: 1; display: block; width: 100%; height: 100%;
+  background-color: var(--uib-color); transform: rotate(45deg) translate(-3%, 50%) scaleX(1.2);
+  transform-origin: bottom right; border-radius: 0 0 calc(var(--uib-size) / 20) 0;
+  animation: hg-flow calc(var(--uib-speed) * 2) linear infinite both; transition: background-color .3s ease; }
+.hg-half:last-child::after { animation-delay: calc(var(--uib-speed) * -1); }
+@keyframes hg-flow {
+  0% { transform: rotate(45deg) translate(-3%, 50%) scaleX(1.2); }
+  30% { transform: rotate(45deg) translate(115%, 50%) scaleX(1.2); }
+  30.001%, 50% { transform: rotate(0deg) translate(-85%, -85%) scaleX(1); }
+  80%, 100% { transform: rotate(0deg) translate(0%, 0%) scaleX(1); }
+}
+@keyframes hg-rotate {
+  0%, 30% { transform: rotate(45deg); }
+  50%, 80% { transform: rotate(225deg); }
+  100% { transform: rotate(405deg); }
+}
+@media (prefers-reduced-motion: reduce) { .hg, .hg-half::after { animation-duration: calc(var(--uib-speed) * 6); } }
+
+/* a loading state: the hourglass with what is being waited for under it */
+.hg-loading { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+  padding: 48px 16px; color: var(--muted); font-size: var(--fs-sm); text-align: center; }
+.hg-loading.inline { flex-direction: row; padding: 10px 0; gap: 10px; justify-content: flex-start; }
+/* over a Store screen while its page opens */
+.posframe { position: relative; }
+.hg-cover { position: absolute; inset: 0; z-index: 5; display: flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--panel, #fff) 72%, transparent); backdrop-filter: blur(1px);
+  animation: fadein .15s ease; pointer-events: none; }
