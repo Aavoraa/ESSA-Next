@@ -251,6 +251,29 @@ doc = r.json()
 eq("…and is flagged as expiring soon", doc["expiring"], True)
 eq("…and its file comes back", client.get(f"/api/hr/employees/{priya['id']}/documents/{doc['id']}/file",
                                           headers=H).content, b"%PDF-1.4 test")
+eq("…filed in its folder", doc["group"], "ID proofs")
+r = client.post(f"/api/hr/employees/{priya['id']}/documents", headers=H, data={"doc_type": "Resignation letter"},
+                files={"file": ("resign.pdf", b"%PDF-1.4 r", "application/pdf")})
+eq("a resignation letter has a kind and a folder of its own", r.json().get("group"), "Conduct & exit")
+eq("every folder's kinds are offered", [g for g, _ in get("options")["doc_groups"]],
+   ["ID proofs", "Joining", "Pay letters", "Education & certificates", "Previous employment", "Conduct & exit", "Other"])
+
+head("the employee's photo")
+PNG = (b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+       b"\x00\x00\x00\rIDATx\x9cc\xf8\xff\xff?\x00\x05\xfe\x02\xfe\xa7\x35\x81\x84\x00\x00\x00\x00IEND\xaeB`\x82")
+r = client.post(f"/api/hr/employees/{priya['id']}/photo", headers=H, files={"file": ("me.pdf", b"%PDF", "application/pdf")})
+eq("a PDF is not a photo", r.status_code, 400)
+r = client.post(f"/api/hr/employees/{priya['id']}/photo", headers=H, files={"file": ("me.png", PNG, "image/png")})
+v1 = r.json()["photo"]
+eq("a picture becomes their photo", bool(v1), True)
+eq("…served back for the banner", client.get(f"/api/hr/employees/{priya['id']}/photo", headers=H).content, PNG)
+eq("…and kept in their file", any(d["doc_type"] == "Photo" for d in r.json()["documents"]), True)
+r = client.post(f"/api/hr/employees/{priya['id']}/photo", headers=H,
+                files={"file": ("me2.png", PNG + b"\x00", "image/png")})
+eq("a new picture changes the version, so no browser shows the old one", r.json()["photo"] != v1, True)
+r = client.delete(f"/api/hr/employees/{priya['id']}/photo", headers=H)
+eq("removing it takes it off the record", r.json()["photo"], None)
+eq("…but not out of the file", sum(d["doc_type"] == "Photo" for d in r.json()["documents"]), 2)
 
 # ===========================================================================
 head("attendance — by hand, from a file, from a device and from the till")

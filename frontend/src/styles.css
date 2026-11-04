@@ -3557,3 +3557,64 @@ table.hr-roster th.hol { color: var(--att-h); }
 }
 .fin-stats.hr-stats4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
 @media (max-width: 860px) { .fin-stats.hr-stats4 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* the employee banner: a picture big enough to recognise someone by */
+.hr-banner { position: relative; border: 1px solid var(--line); border-radius: var(--radius-lg); overflow: hidden;
+  background: var(--panel); margin-bottom: 6px; }
+.hr-bannercover { height: 64px; background: linear-gradient(120deg, var(--brand) 0%, var(--brand-500) 60%, var(--accent) 100%); }
+.hr-bannerbody { display: flex; align-items: flex-end; gap: 18px; padding: 0 20px 14px; margin-top: -48px; }
+.hr-photo { position: relative; flex: none; width: 112px; height: 112px; }
+.hr-photobtn, .hr-photoempty { display: flex; align-items: center; justify-content: center; width: 112px; height: 112px;
+  border-radius: 50%; border: 4px solid var(--panel); box-shadow: 0 4px 14px rgba(15,23,42,.18); overflow: hidden;
+  background: var(--brand-100); padding: 0; }
+.hr-photobtn { cursor: zoom-in; }
+.hr-photobtn img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.hr-photoempty { color: var(--brand); font-size: 36px; font-weight: 700; letter-spacing: .02em; }
+.hr-photocam { position: absolute; right: 4px; bottom: 6px; width: 32px; height: 32px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center; border: 2px solid var(--panel);
+  background: var(--brand); color: #fff; cursor: pointer; box-shadow: var(--shadow-1); }
+.hr-photocam:hover { background: var(--brand-700); }
+.hr-bannerinfo { flex: 1; min-width: 0; padding-top: 54px; }
+.hr-bannername { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.hr-bannername h3 { margin: 0; font-size: var(--fs-xl); letter-spacing: -.01em; }
+.hr-code { font-family: var(--mono); font-size: var(--fs-xs); font-weight: 700; color: var(--brand);
+  background: var(--brand-100); border: 1px solid var(--brand-200); border-radius: 6px; padding: 2px 7px; }
+.hr-bannerrole { font-size: var(--fs-md); color: var(--text-2); margin-top: 2px; }
+.hr-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.hr-chips span { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 999px;
+  background: var(--panel-2); border: 1px solid var(--line); font-size: var(--fs-xs); color: var(--text-2); }
+.hr-chips i { font-style: normal; }
+.hr-photoacts { display: flex; gap: 6px; margin-top: 10px; }
+.hr-banner .hr-gross { align-self: flex-end; padding-bottom: 4px; }
+.hr-lightbox { position: fixed; inset: 0; z-index: 1000; background: rgba(15,23,42,.82); display: flex;
+  flex-direction: column; align-items: center; justify-content: center; gap: 12px; cursor: zoom-out; padding: 24px; }
+.hr-lightbox img { max-width: min(92vw, 900px); max-height: 80vh; object-fit: contain; border-radius: var(--radius);
+  box-shadow: 0 10px 40px rgba(0,0,0,.4); background: #fff; }
+.hr-lightcap { color: #fff; font-weight: 600; display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.hr-lightcap span { font-weight: 400; font-size: var(--fs-xs); opacity: .7; }
+
+/* the employee's file, in folders */
+.hr-docadd { background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; margin-bottom: 14px; }
+.hr-docadd .fin-sidehead { border-top: none; padding-top: 0; }
+.hr-folders { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 12px; }
+.hr-folder { border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); padding: 10px 12px; }
+.hr-folder.empty { background: var(--panel-2); }
+.hr-folder.note { border-style: dashed; }
+.hr-folderhead { display: flex; align-items: center; gap: 7px; color: var(--brand); padding-bottom: 8px;
+  border-bottom: 1px solid var(--line); margin-bottom: 6px; }
+.hr-folderhead b { flex: 1; font-size: var(--fs-sm); }
+.hr-foldernone { padding: 4px 0; }
+.hr-doc { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-bottom: 1px dashed var(--line); }
+.hr-doc:last-child { border-bottom: none; }
+.hr-docthumb { flex: none; width: 46px; height: 46px; border-radius: 8px; overflow: hidden; padding: 0;
+  border: 1px solid var(--line); background: var(--panel-2); cursor: zoom-in; }
+.hr-docthumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.hr-docicon { flex: none; width: 46px; height: 46px; border-radius: 8px; display: inline-flex; align-items: center;
+  justify-content: center; background: var(--info-bg); color: var(--info); border: 1px solid var(--info-line); }
+.hr-docbody { flex: 1; min-width: 0; font-size: var(--fs-sm); }
+.hr-docbody .badge { margin-left: 6px; }
+.hr-docacts { display: flex; gap: 4px; flex: none; }
+@media (max-width: 720px) {
+  .hr-bannerbody { flex-wrap: wrap; }
+  .hr-bannerinfo { padding-top: 0; flex-basis: 100%; }
+}

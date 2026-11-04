@@ -97,7 +97,7 @@ function loadOptions(force) {
   if (optCache && !force) return Promise.resolve(optCache)
   return api.hrGet('options').then((o) => { optCache = o; optWaiters.forEach((f) => f(o)); return o })
 }
-const BLANK_OPTS = { departments: [], designations: [], shifts: [], leave_types: [], employees: [], locations: [],
+const BLANK_OPTS = { doc_groups: [], departments: [], designations: [], shifts: [], leave_types: [], employees: [], locations: [],
   banks: [], components: [], employment_types: [], exit_types: [], doc_types: [], contract_types: [],
   history_kinds: [], weekdays: [], statuses: {}, genders: [], pay_modes: [], incentive_bases: [], goal_metrics: [],
   store: false }
@@ -119,7 +119,7 @@ function Avatar({ id, name, photo, size = 32 }) {
   const [bad, setBad] = useState(false)
   const style = { width: size, height: size, fontSize: Math.round(size * 0.38) }
   return photo && !bad
-    ? <img className="hr-av" style={style} src={`/api/hr/employees/${id}/photo`} alt="" onError={() => setBad(true)} />
+    ? <img className="hr-av" style={style} src={`/api/hr/employees/${id}/photo?v=${photo}`} alt="" onError={() => setBad(true)} />
     : <span className="hr-av" style={style} aria-hidden="true">{initials(name)}</span>
 }
 
@@ -424,20 +424,12 @@ function EmployeeModal({ id, toast, onClose, onSaved }) {
   return (
     <Modal wide title={eid ? `${e?.name || '…'} · ${e?.code || ''}` : 'New employee'} onClose={onClose}
       foot={formTabs.includes(tab) ? <>
-        {eid && e && <span className="small muted">{e.designation || 'No designation'} · joined {fmtDate(e.joined_on)} · {e.service}</span>}
         <div className="spacer" />
         <button className="btn" onClick={onClose}>Close</button>
         <button className="btn primary" disabled={busy || !f.name || !f.joined_on} onClick={save}>{busy ? 'Saving…' : eid ? 'Save changes' : 'Add employee'}</button>
       </> : <><div className="spacer" /><button className="btn" onClick={onClose}>Close</button></>}>
       {eid && e && (
-        <div className="hr-profile">
-          <Avatar id={eid} name={e.name} photo={e.photo} size={52} />
-          <div><b>{e.name}</b><div className="small muted">{[e.designation, e.department, e.location].filter(Boolean).join(' · ') || 'No job details yet'}</div>
-            <div className="small">{e.manager ? `Reports to ${e.manager}` : 'Reports to nobody'}{e.reports?.length ? ` · ${plural(e.reports.length, 'report')}` : ''}</div></div>
-          <div className="spacer" />
-          <Tone s={e.status} />
-          <span className="hr-gross"><span>Gross / month</span><b>{rs0(e.gross)}</b></span>
-        </div>
+        <EmpBanner e={e} toast={toast} onChange={(x) => { fill(x); onSaved() }} />
       )}
       <Tabs tabs={tabs} value={tab} onChange={setTab} />
       {tab === 'personal' && (
@@ -571,17 +563,91 @@ function EmpContracts({ e, toast, onChange }) {
   )
 }
 
+// The banner across the top of an employee's record: their picture, big enough
+// to recognise them by, and who they are. Click the picture to see it full size.
+function EmpBanner({ e, toast, onChange }) {
+  const file = useRef(null)
+  const [busy, run] = useRun(toast)
+  const [big, setBig] = useState(false)
+  const upload = async (ev) => {
+    const f = ev.target.files?.[0]
+    ev.target.value = ''
+    if (!f) return
+    const fd = new FormData()
+    fd.append('file', f)
+    const r = await run(() => api.hrUpload(`employees/${e.id}/photo`, fd), '✓ Photo updated')
+    if (r) onChange(r)
+  }
+  const remove = async () => {
+    if (!window.confirm(`Take ${e.name}'s photo off the record? It stays under Documents.`)) return
+    const r = await run(() => api.hrSend('DELETE', `employees/${e.id}/photo`), 'Photo removed')
+    if (r) onChange(r)
+  }
+  const chips = [
+    e.phone && ['📞', e.phone], e.email && ['✉', e.email],
+    e.joined_on && ['🗓', `Joined ${fmtDate(e.joined_on)} · ${e.service}`],
+    ['👤', e.manager ? `Reports to ${e.manager}` : 'Reports to nobody'],
+    e.store_username && ['🏬', `Store login ${e.store_username}`],
+    e.blood_group && ['🩸', e.blood_group],
+  ].filter(Boolean)
+  return (
+    <div className="hr-banner">
+      <div className="hr-bannercover" />
+      <div className="hr-bannerbody">
+        <div className="hr-photo">
+          {e.photo ? (
+            <button className="hr-photobtn" onClick={() => setBig(true)} title="See the photo full size">
+              <img src={`/api/hr/employees/${e.id}/photo?v=${e.photo}`} alt={`Photo of ${e.name}`} />
+            </button>
+          ) : <span className="hr-photoempty" aria-label="No photo">{initials(e.name)}</span>}
+          <button className="hr-photocam" disabled={busy} onClick={() => file.current?.click()}
+            title={e.photo ? 'Change the photo' : 'Add a photo'}><Icon name="upload" size={14} /></button>
+          <input ref={file} type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={upload} />
+        </div>
+        <div className="hr-bannerinfo">
+          <div className="hr-bannername"><h3>{e.name}</h3><span className="hr-code">{e.code}</span><Tone s={e.status} /></div>
+          <div className="hr-bannerrole">{[e.designation, e.department, e.location].filter(Boolean).join(' · ') || 'No job details yet'}
+            {e.employment_type ? <span className="muted"> · {e.employment_type}</span> : null}</div>
+          <div className="hr-chips">{chips.map(([i, t]) => <span key={t}><i aria-hidden="true">{i}</i>{t}</span>)}</div>
+          <div className="hr-photoacts">
+            <button className="btn sm" disabled={busy} onClick={() => file.current?.click()}>{e.photo ? 'Change photo' : 'Add photo'}</button>
+            {e.photo && <button className="btn sm" onClick={() => setBig(true)}><Icon name="eye" size={13} /> View</button>}
+            {e.photo && <button className="btn sm" disabled={busy} onClick={remove}>Remove</button>}
+          </div>
+        </div>
+        <span className="hr-gross"><span>Gross / month</span><b>{rs0(e.gross)}</b></span>
+      </div>
+      {big && (
+        <div className="hr-lightbox" role="dialog" aria-label={`Photo of ${e.name}`} onClick={() => setBig(false)}>
+          <img src={`/api/hr/employees/${e.id}/photo?v=${e.photo}`} alt={`Photo of ${e.name}`} />
+          <div className="hr-lightcap">{e.name} · {e.code}<span>Click anywhere to close</span></div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function DocTypeSelect({ value, onChange, groups }) {
+  return (
+    <select value={value} onChange={(ev) => onChange(ev.target.value)}>
+      {groups.map(([g, kinds]) => <optgroup key={g} label={g}>{kinds.map((k) => <option key={k} value={k}>{k}</option>)}</optgroup>)}
+    </select>
+  )
+}
+
 function EmpDocuments({ e, toast, onChange }) {
   const [o] = useHrOptions()
-  const [f, setF] = useState({ doc_type: 'Aadhaar', number: '', issued_on: '', expires_on: '', title: '' })
+  const [f, setF] = useState({ doc_type: 'Offer letter', number: '', issued_on: '', expires_on: '', title: '' })
+  const [open, setOpen] = useState(null)       // a picture shown full size
   const file = useRef(null)
   const [busy, run] = useRun(toast)
   const set = binder(setF)
+  const groups = o.doc_groups?.length ? o.doc_groups : [['Documents', o.doc_types]]
   const add = async () => {
     const fd = new FormData()
     Object.entries(f).forEach(([k, v]) => fd.append(k, v || ''))
     if (file.current?.files?.[0]) fd.append('file', file.current.files[0])
-    const r = await run(() => api.hrUpload(`employees/${e.id}/documents`, fd), '✓ Document added')
+    const r = await run(() => api.hrUpload(`employees/${e.id}/documents`, fd), `✓ ${f.doc_type} added`)
     if (r) { setF({ ...f, number: '', issued_on: '', expires_on: '', title: '' }); if (file.current) file.current.value = ''; onChange() }
   }
   const del = async (d) => {
@@ -589,33 +655,60 @@ function EmpDocuments({ e, toast, onChange }) {
     await run(() => api.hrSend('DELETE', `employees/${e.id}/documents/${d.id}`), 'Document deleted')
     onChange()
   }
+  const url = (d) => `/api/hr/employees/${e.id}/documents/${d.id}/file`
+  const inGroup = (g) => e.documents.filter((d) => (d.group || 'Other') === g)
   return (
     <>
-      {e.documents.length === 0 ? <Empty>No documents yet.</Empty> : (
-        <div className="tablewrap"><table className="items fin-table">
-          <thead><tr><th>Document</th><th>Number</th><th>Issued</th><th>Expires</th><th>File</th><th>Added by</th><th /></tr></thead>
-          <tbody>{e.documents.map((d) => (
-            <tr key={d.id}><td><b>{d.doc_type}</b>{d.title && <div className="small muted">{d.title}</div>}</td>
-              <td className="mono">{d.number || '—'}</td><td>{fmtDate(d.issued_on)}</td>
-              <td>{fmtDate(d.expires_on)}{d.expired && <Badge tone="cancelled">expired</Badge>}{d.expiring && <Badge tone="pending">soon</Badge>}</td>
-              <td>{d.has_file ? <a className="btn sm" href={`/api/hr/employees/${e.id}/documents/${d.id}/file`} target="_blank" rel="noreferrer">
-                <Icon name="eye" size={13} /> {d.filename || 'View'}</a> : <span className="muted">—</span>}</td>
-              <td className="small muted">{d.uploaded_by}</td>
-              <td className="acts"><button className="btn sm danger" onClick={() => del(d)}><Icon name="trash" size={13} /></button></td></tr>
-          ))}</tbody>
-        </table></div>
-      )}
-      <div className="fin-sidehead" style={{ marginTop: 14 }}>Add a document</div>
-      <div className="fin-form four" style={{ marginTop: 8 }}>
-        <F label="Kind"><Sel value={f.doc_type} onChange={set('doc_type')} allowBlank={false} options={o.doc_types} /></F>
-        <F label="Number"><input value={f.number} onChange={set('number')} /></F>
-        <DateField label="Issued" value={f.issued_on} onChange={set('issued_on')} />
-        <DateField label="Expires" value={f.expires_on} onChange={set('expires_on')} />
-        <F label="Note"><input value={f.title} onChange={set('title')} /></F>
-        <F label="File (PDF, image, Word)" style={{ gridColumn: 'span 2' }}><input ref={file} type="file" accept=".pdf,.jpg,.jpeg,.png,.webp,.doc,.docx" /></F>
-        <F label=" "><button className="btn primary" disabled={busy} onClick={add}><Icon name="upload" size={13} /> Upload</button></F>
+      <div className="hr-docadd">
+        <div className="fin-sidehead">Add to the file</div>
+        <div className="fin-form four" style={{ marginTop: 8, marginBottom: 0 }}>
+          <F label="Document"><DocTypeSelect value={f.doc_type} onChange={set('doc_type')} groups={groups} /></F>
+          <F label="Number"><input value={f.number} onChange={set('number')} /></F>
+          <DateField label="Issued" value={f.issued_on} onChange={set('issued_on')} />
+          <DateField label="Expires" value={f.expires_on} onChange={set('expires_on')} />
+          <F label="Note"><input value={f.title} onChange={set('title')} placeholder={f.doc_type === 'Certificate' ? 'e.g. Tailoring course' : ''} /></F>
+          <F label="File (PDF, picture or Word · up to 10 MB)" style={{ gridColumn: 'span 2' }}>
+            <input ref={file} type="file" accept={f.doc_type === 'Photo' ? 'image/jpeg,image/png,image/webp' : '.pdf,.jpg,.jpeg,.png,.webp,.doc,.docx'} /></F>
+          <F label=" "><button className="btn primary" disabled={busy} onClick={add}><Icon name="upload" size={13} /> Upload</button></F>
+        </div>
       </div>
-      <div className="small muted fin-note">A document of the kind “Photo” becomes their picture across HR.</div>
+      <div className="hr-folders">
+        {groups.map(([g]) => {
+          const docs = inGroup(g)
+          return (
+            <section key={g} className={'hr-folder' + (docs.length ? '' : ' empty')}>
+              <div className="hr-folderhead"><Icon name="book" size={14} /><b>{g}</b><span className="hr-count">{docs.length}</span></div>
+              {docs.length === 0 ? <div className="small muted hr-foldernone">Nothing filed yet</div> : docs.map((d) => (
+                <div key={d.id} className="hr-doc">
+                  {d.is_image ? <button className="hr-docthumb" onClick={() => setOpen(d)} title="See it full size">
+                    <img src={url(d)} alt={d.doc_type} loading="lazy" /></button>
+                    : <span className="hr-docicon"><Icon name="filetext" size={18} /></span>}
+                  <div className="hr-docbody">
+                    <b>{d.doc_type}</b>{d.title && <span className="muted"> · {d.title}</span>}
+                    <div className="small muted">{[d.number, d.issued_on && `issued ${fmtDate(d.issued_on)}`, d.expires_on && `expires ${fmtDate(d.expires_on)}`]
+                      .filter(Boolean).join(' · ') || (d.filename || 'No details')}
+                      {d.expired && <Badge tone="cancelled">expired</Badge>}{d.expiring && <Badge tone="pending">expiring</Badge>}</div>
+                  </div>
+                  <div className="hr-docacts">
+                    {d.has_file && <a className="btn sm" href={url(d)} target="_blank" rel="noreferrer" title={d.filename}><Icon name="eye" size={13} /> View</a>}
+                    <button className="btn sm danger" onClick={() => del(d)} title="Delete"><Icon name="trash" size={13} /></button>
+                  </div>
+                </div>
+              ))}
+            </section>
+          )
+        })}
+        <section className="hr-folder note">
+          <div className="hr-folderhead"><Icon name="receipt" size={14} /><b>Payslips</b></div>
+          <div className="small muted hr-foldernone">Made from each month's payroll — see the Payslips tab. They are never out of step with the books.</div>
+        </section>
+      </div>
+      {open && (
+        <div className="hr-lightbox" role="dialog" aria-label={open.doc_type} onClick={() => setOpen(null)}>
+          <img src={url(open)} alt={open.doc_type} />
+          <div className="hr-lightcap">{e.name} · {open.doc_type}<span>Click anywhere to close</span></div>
+        </div>
+      )}
     </>
   )
 }

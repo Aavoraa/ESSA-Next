@@ -201,6 +201,21 @@ def del_document(eid: int, did: int, db: Session = Depends(get_db)):
     return {"deleted": True}
 
 
+@router.post("/employees/{eid}/photo")
+async def upload_photo(eid: int, request: Request, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """A new picture: kept as a Photo document and made the record's photo."""
+    raw = await file.read()
+    _do(db, svc.save_document, db, eid, {"doc_type": "Photo", "title": "Profile photo"}, raw, file.filename,
+        _user(request))
+    return svc.get_employee(db, eid)
+
+
+@router.delete("/employees/{eid}/photo")
+def delete_photo(eid: int, db: Session = Depends(get_db)):
+    _do(db, svc.remove_photo, db, eid)
+    return svc.get_employee(db, eid)
+
+
 @router.get("/employees/{eid}/photo")
 def photo(eid: int, db: Session = Depends(get_db)):
     try:

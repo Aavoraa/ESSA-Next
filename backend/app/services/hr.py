@@ -48,9 +48,22 @@ COMPONENTS = [("basic", "Basic"), ("da", "DA"), ("hra", "HRA"), ("conveyance", "
 COMPONENT_KEYS = [k for k, _ in COMPONENTS]
 EMPLOYMENT_TYPES = ["Permanent", "Probation", "Contract", "Trainee", "Daily Wage"]
 EXIT_TYPES = ["Resigned", "Terminated", "Retired", "Contract end", "Absconded"]
-DOC_TYPES = ["Aadhaar", "PAN", "Photo", "Resume", "Offer letter", "Appointment letter",
-             "Contract", "Relieving letter", "Experience letter", "Education", "Bank proof",
-             "Address proof", "Police verification", "Medical", "Other"]
+#: The employee file's folders, and the kinds of document in each.
+DOC_GROUPS = [
+    ("ID proofs", ["Photo", "Aadhaar", "PAN", "Voter ID", "Passport", "Driving licence", "Address proof",
+                   "Bank proof"]),
+    ("Joining", ["Resume", "Offer letter", "Appointment letter", "Joining form", "NDA", "Contract",
+                 "Police verification", "Medical"]),
+    ("Pay letters", ["Salary revision letter", "Increment letter", "Promotion letter"]),
+    ("Education & certificates", ["Education", "Certificate"]),
+    ("Previous employment", ["Relieving letter", "Experience letter", "Previous employer payslips",
+                             "Previous employer Form 16"]),
+    ("Conduct & exit", ["Warning letter", "Resignation letter", "Exit / F&F documents"]),
+    ("Other", ["Other"]),
+]
+DOC_TYPES = [t for _, kinds in DOC_GROUPS for t in kinds]
+DOC_GROUP_OF = {t: g for g, kinds in DOC_GROUPS for t in kinds}
+IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp")
 CONTRACT_TYPES = ["Appointment", "Probation", "Fixed term", "Renewal", "Consultant", "Apprentice"]
 HISTORY_KINDS = ["Joined", "Confirmed", "Promotion", "Transfer", "Increment", "Re-designation",
                  "Manager change", "Appraisal", "Exit", "Rejoined", "Note"]
@@ -415,7 +428,7 @@ def emp_out(e, full=False):
     d["designation"] = e.designation.name if e.designation else None
     d["shift"] = e.shift.name if e.shift else None
     d["manager"] = e.manager.name if e.manager else None
-    d["photo"] = bool(e.photo_ref)
+    d["photo"] = photo_version(e)
     if full:
         d["service"] = service_length(e)
     return d
@@ -682,6 +695,8 @@ def doc_out(x):
     d = _master_out(x)
     d.pop("file_ref", None)
     d["has_file"] = bool(x.file_ref)
+    d["group"] = DOC_GROUP_OF.get(x.doc_type, "Other")
+    d["is_image"] = bool(x.file_ref and x.file_ref.lower().endswith(IMAGE_EXTS))
     d["expired"] = bool(x.expires_on and x.expires_on < today())
     d["expiring"] = bool(x.expires_on and today() <= x.expires_on <= (business_day.today() + dt.timedelta(days=30)).isoformat())
     return d
@@ -705,6 +720,8 @@ def save_document(db, eid, data, raw=None, filename=None, user=None, did=None):
         ext = ("." + filename.rsplit(".", 1)[-1].lower()) if filename and "." in filename else ""
         if ext not in (".pdf", ".jpg", ".jpeg", ".png", ".webp", ".doc", ".docx", ""):
             raise ValueError("Attach a PDF, an image or a Word file")
+        if (data.get("doc_type") or x.doc_type) == "Photo" and ext not in IMAGE_EXTS:
+            raise ValueError("A photo must be a JPG, PNG or WebP picture")
         h = hashlib.sha256(raw).hexdigest()
         x.file_ref = storage.save(raw, f"hr{eid}_{h[:16]}{ext}")
         x.filename = filename
@@ -728,6 +745,20 @@ def document_file(db, eid, did):
     if raw is None:
         raise LookupError("the file is missing from storage")
     return raw, x.mime or storage.mime_for(x.file_ref), x.filename or f"document-{did}"
+
+
+def photo_version(e):
+    """Changes whenever the photo does, so a browser never shows the old one."""
+    return hashlib.sha1(e.photo_ref.encode()).hexdigest()[:10] if e.photo_ref else None
+
+
+def remove_photo(db, eid):
+    """Takes the picture off the record; the Photo document itself stays on file."""
+    e = db.get(M.Employee, eid)
+    if e is None:
+        raise LookupError("employee not found")
+    e.photo_ref = None
+    db.flush()
 
 
 def photo_file(db, eid):
@@ -810,7 +841,7 @@ def org_chart(db, department_id=None, location=None):
               "level": e.designation.level if e.designation else 9,
               "department": e.department.name if e.department else None, "location": e.location,
               "manager_id": e.reporting_to_id if e.reporting_to_id in ids else None,
-              "reports": reports.get(e.id, 0), "photo": bool(e.photo_ref), "status": e.status}
+              "reports": reports.get(e.id, 0), "photo": photo_version(e), "status": e.status}
              for e in keep]
     deps = []
     for d in db.query(M.HrDepartment).filter(M.HrDepartment.active.isnot(False)).all():
@@ -2630,7 +2661,7 @@ def options(db):
         "employees": [emp_brief(e) for e in db.query(M.Employee).filter(M.Employee.status != "exited")
                       .order_by(M.Employee.name).all()],
         "locations": locs, "banks": banks, "components": COMPONENTS, "employment_types": EMPLOYMENT_TYPES,
-        "exit_types": EXIT_TYPES, "doc_types": DOC_TYPES, "contract_types": CONTRACT_TYPES,
+        "exit_types": EXIT_TYPES, "doc_types": DOC_TYPES, "doc_groups": DOC_GROUPS, "contract_types": CONTRACT_TYPES,
         "history_kinds": HISTORY_KINDS, "weekdays": WEEKDAYS, "statuses": STATUSES, "genders": GENDERS,
         "pay_modes": PAY_MODES, "incentive_bases": INCENTIVE_BASES, "goal_metrics": GOAL_METRICS,
         "store": pos_sales.available(),
