@@ -2558,3 +2558,463 @@ class TallyConfig(Base):
     #: {"purchase": {...}, "sales": {...}, "voucher_types": {...}, "payment_modes": {...}}
     mapping = Column(JSON, default=dict)
     updated_at = Column(DateTime, default=now, onupdate=now)
+
+
+# ============================================================================
+#  HR — people, time, leave and pay
+#  --------------------------------------------------------------------------
+#  An employee is one row here from the day they join to the day they leave and
+#  after: exiting is a status, never a delete, because their payslips, PF and
+#  role history must still read correctly years later.
+#
+#  Time is recorded once, as one HrAttendance row per person per day, whatever
+#  wrote it — a supervisor's tick, a biometric file, a device's push, the Store's
+#  own check-in. Leave, overtime and payroll are all read off those rows.
+#
+#  Money leaves through Finance. An approved payroll posts a Journal and a paid
+#  one a Payment voucher (services/finance.save_voucher), and an advance is a
+#  Payment voucher the day it is given, so the books never need salaries keyed
+#  in twice. Dates are ISO strings (YYYY-MM-DD), as in Finance; a month is
+#  "YYYY-MM".
+# ============================================================================
+class HrDepartment(Base):
+    __tablename__ = "hr_departments"
+    id = Column(Integer, primary_key=True)
+    name = Column(String, nullable=False, unique=True)
+    code = Column(String)
+    head_id = Column(Integer, ForeignKey("employees.id", use_alter=True,
+                                         name="fk_hr_departments_head"), index=True)
+    active = Column(Boolean, default=True)
+
+
+class HrDesignation(Base):
+    __tablename__ = "hr_designations"
+    id = Column(Integer, primary_key=True)
+    name = Column(String, nullable=False)
+    department_id = Column(Integer, ForeignKey("hr_departments.id"), index=True)
+    grade = Column(String)
+    #: Its place in the hierarchy chart: 1 is the top.
+    level = Column(Integer, default=5)
+    active = Column(Boolean, default=True)
+
+    department = relationship("HrDepartment")
+
+
+class HrShift(Base):
+    """A working day's pattern. Times are the shop's wall clock, "HH:MM"."""
+    __tablename__ = "hr_shifts"
+    id = Column(Integer, primary_key=True)
+    name = Column(String, nullable=False)
+    code = Column(String)
+    start_time = Column(String, default="10:00")
+    end_time = Column(String, default="21:00")
+    break_minutes = Column(Integer, default=60)
+    #: Minutes after the start that are still on time.
+    grace_minutes = Column(Integer, default=10)
+    #: Hours that make a full day and a half day.
+    full_day_hours = Column(Float, default=9.0)
+    half_day_hours = Column(Float, default=4.5)
+    #: Overtime counts only past this many minutes beyond the shift's end.
+    ot_after_minutes = Column(Integer, default=30)
+    color = Column(String, default="#2F8F68")
+    active = Column(Boolean, default=True)
+
+
+class Employee(Base):
+    __tablename__ = "employees"
+    id = Column(Integer, primary_key=True)
+    code = Column(String, unique=True, index=True)          # EMP0001
+    name = Column(String, nullable=False, index=True)
+    father_name = Column(String)
+    gender = Column(String)
+    dob = Column(String)
+    marital_status = Column(String)
+    anniversary = Column(String)
+    blood_group = Column(String)
+    phone = Column(String, index=True)
+    alt_phone = Column(String)
+    email = Column(String)
+    address = Column(Text)
+    permanent_address = Column(Text)
+    emergency_name = Column(String)
+    emergency_phone = Column(String)
+    aadhaar = Column(String)
+    pan = Column(String)
+    uan = Column(String)
+    pf_no = Column(String)
+    esi_no = Column(String)
+    bank_name = Column(String)
+    bank_account = Column(String)
+    ifsc = Column(String)
+    photo_ref = Column(String)
+
+    # --- the job ---
+    department_id = Column(Integer, ForeignKey("hr_departments.id"), index=True)
+    designation_id = Column(Integer, ForeignKey("hr_designations.id"), index=True)
+    grade = Column(String)
+    #: The warehouse or store they work at, by name (as Finance files a voucher).
+    location = Column(String, index=True)
+    reporting_to_id = Column(Integer, ForeignKey("employees.id"), index=True)
+    #: Permanent | Probation | Contract | Trainee | Daily Wage
+    employment_type = Column(String, default="Permanent")
+    joined_on = Column(String, index=True)
+    confirmed_on = Column(String)
+    probation_months = Column(Integer, default=6)
+    shift_id = Column(Integer, ForeignKey("hr_shifts.id"), index=True)
+    #: The day of the week off, "Sunday"; blank = none (a store open all week
+    #: gives each person their own day).
+    weekly_off = Column(String, default="Tuesday")
+
+    # --- pay ---
+    #: Monthly rates: {"basic", "hra", "da", "conveyance", "special", "other"}.
+    salary = Column(JSON, default=dict)
+    pf_applicable = Column(Boolean, default=True)
+    esi_applicable = Column(Boolean, default=True)
+    pt_applicable = Column(Boolean, default=True)
+    #: "new" | "old" income-tax regime, for the monthly TDS estimate.
+    tax_regime = Column(String, default="new")
+    #: A fixed monthly TDS that replaces the estimate (declarations, other income).
+    tds_monthly = Column(Float)
+    #: Bank | Cash | Cheque
+    payment_mode = Column(String, default="Bank")
+
+    #: Their login at the Store's tills — how check-ins become attendance and
+    #: their bills become sales incentive.
+    store_username = Column(String, index=True)
+
+    # --- leaving ---
+    status = Column(String, default="active", index=True)   # active | notice | exited
+    resigned_on = Column(String)
+    last_working_day = Column(String)
+    exit_type = Column(String)        # Resigned | Terminated | Retired | Absconded | Contract end
+    exit_reason = Column(Text)
+    fnf_status = Column(String)       # pending | settled
+    fnf_amount = Column(Float)
+    created_at = Column(DateTime, default=now)
+    updated_at = Column(DateTime, default=now, onupdate=now)
+
+    department = relationship("HrDepartment", foreign_keys=[department_id])
+    designation = relationship("HrDesignation")
+    shift = relationship("HrShift")
+    manager = relationship("Employee", remote_side=[id], foreign_keys=[reporting_to_id])
+
+
+class EmployeeContract(Base):
+    __tablename__ = "employee_contracts"
+    id = Column(Integer, primary_key=True)
+    employee_id = Column(Integer, ForeignKey("employees.id"), index=True, nullable=False)
+    contract_type = Column(String)    # Appointment | Probation | Fixed term | Renewal | Consultant
+    start_date = Column(String)
+    end_date = Column(String)
+    ctc_annual = Column(Float)
+    notice_days = Column(Integer, default=30)
+    terms = Column(Text)
+    document_id = Column(Integer, ForeignKey("employee_documents.id", use_alter=True,
+                                             name="fk_contract_document"))
+    status = Column(String, default="active")   # active | ended | terminated
+    created_at = Column(DateTime, default=now)
+
+
+class EmployeeDocument(Base):
+    __tablename__ = "employee_documents"
+    id = Column(Integer, primary_key=True)
+    employee_id = Column(Integer, ForeignKey("employees.id"), index=True, nullable=False)
+    doc_type = Column(String)         # Aadhaar | PAN | Offer letter | …
+    title = Column(String)
+    number = Column(String)
+    issued_on = Column(String)
+    expires_on = Column(String, index=True)
+    file_ref = Column(String)         # services/storage reference
+    filename = Column(String)
+    mime = Column(String)
+    uploaded_by = Column(String)
+    created_at = Column(DateTime, default=now)
+
+
+class EmployeeHistory(Base):
+    """The role history: every change of department, designation, place, pay or
+    manager — written by the employee form itself, so it cannot be forgotten."""
+    __tablename__ = "employee_history"
+    id = Column(Integer, primary_key=True)
+    employee_id = Column(Integer, ForeignKey("employees.id"), index=True, nullable=False)
+    effective_on = Column(String, index=True)
+    #: Joined | Confirmed | Promotion | Transfer | Increment | Re-designation |
+    #: Manager change | Appraisal | Exit | Rejoined | Note
+    kind = Column(String)
+    detail = Column(Text)
+    department = Column(String)
+    designation = Column(String)
+    location = Column(String)
+    gross = Column(Float)
+    created_by = Column(String)
+    created_at = Column(DateTime, default=now)
+
+
+class HrHoliday(Base):
+    __tablename__ = "hr_holidays"
+    id = Column(Integer, primary_key=True)
+    date = Column(String, index=True, nullable=False)
+    name = Column(String, nullable=False)
+    #: Restricted: a person may take it, the shop stays open.
+    optional = Column(Boolean, default=False)
+
+
+class HrRoster(Base):
+    """A shift for one person on one day, where it differs from their usual."""
+    __tablename__ = "hr_roster"
+    __table_args__ = (UniqueConstraint("employee_id", "date", name="uq_hr_roster_day"),)
+    id = Column(Integer, primary_key=True)
+    employee_id = Column(Integer, ForeignKey("employees.id"), index=True, nullable=False)
+    date = Column(String, index=True, nullable=False)
+    shift_id = Column(Integer, ForeignKey("hr_shifts.id"))
+    #: A rostered day off rather than a shift.
+    off = Column(Boolean, default=False)
+
+
+class HrAttendance(Base):
+    """One person's day. `status`: P present, HD half day, A absent, L on leave,
+    WO weekly off, H holiday, OD on duty (out on work)."""
+    __tablename__ = "hr_attendance"
+    __table_args__ = (UniqueConstraint("employee_id", "date", name="uq_hr_attendance_day"),)
+    id = Column(Integer, primary_key=True)
+    employee_id = Column(Integer, ForeignKey("employees.id"), index=True, nullable=False)
+    date = Column(String, index=True, nullable=False)
+    status = Column(String, default="P")
+    in_time = Column(String)          # "HH:MM"
+    out_time = Column(String)
+    worked_minutes = Column(Integer, default=0)
+    late_minutes = Column(Integer, default=0)
+    ot_minutes = Column(Integer, default=0)
+    ot_status = Column(String)        # pending | approved | rejected
+    ot_approved_minutes = Column(Integer, default=0)
+    #: The leave that covers the day (status L, or the other half of an HD) —
+    #: paid or not decides whether payroll counts it as loss of pay.
+    leave_type_id = Column(Integer, ForeignKey("hr_leave_types.id"))
+    #: manual | import | device | store | leave
+    source = Column(String, default="manual")
+    remarks = Column(String)
+    updated_by = Column(String)
+    updated_at = Column(DateTime, default=now, onupdate=now)
+
+
+class HrLeaveType(Base):
+    __tablename__ = "hr_leave_types"
+    id = Column(Integer, primary_key=True)
+    code = Column(String, nullable=False)
+    name = Column(String, nullable=False)
+    #: Days a year.
+    annual_quota = Column(Float, default=0)
+    #: monthly (quota/12 each month) | yearly (all on 1 January) | none (granted by hand)
+    accrual = Column(String, default="yearly")
+    #: Days that may be carried into the next year; the rest lapse.
+    carry_forward_max = Column(Float, default=0)
+    paid = Column(Boolean, default=True)
+    #: May be taken beyond the balance (loss of pay is the usual one).
+    allow_negative = Column(Boolean, default=False)
+    color = Column(String, default="#2F8F68")
+    active = Column(Boolean, default=True)
+
+
+class HrLeaveRequest(Base):
+    __tablename__ = "hr_leave_requests"
+    id = Column(Integer, primary_key=True)
+    number = Column(String, index=True)
+    employee_id = Column(Integer, ForeignKey("employees.id"), index=True, nullable=False)
+    leave_type_id = Column(Integer, ForeignKey("hr_leave_types.id"), nullable=False)
+    from_date = Column(String, index=True)
+    to_date = Column(String)
+    half_day = Column(Boolean, default=False)
+    days = Column(Float, default=0)
+    reason = Column(Text)
+    status = Column(String, default="pending", index=True)  # pending | approved | rejected | cancelled
+    applied_by = Column(String)
+    applied_at = Column(DateTime, default=now)
+    decided_by = Column(String)
+    decided_at = Column(DateTime)
+    decision_note = Column(String)
+
+    employee = relationship("Employee")
+    leave_type = relationship("HrLeaveType")
+
+
+class HrLeaveLedger(Base):
+    """Every day added to or taken from a leave balance. The balance is their
+    sum — nothing stores it — so accruals can be traced day by day."""
+    __tablename__ = "hr_leave_ledger"
+    id = Column(Integer, primary_key=True)
+    employee_id = Column(Integer, ForeignKey("employees.id"), index=True, nullable=False)
+    leave_type_id = Column(Integer, ForeignKey("hr_leave_types.id"), index=True, nullable=False)
+    date = Column(String, index=True)
+    #: opening | accrual | grant | availed | lapse | carry | adjust
+    kind = Column(String)
+    days = Column(Float, default=0)
+    #: What wrote it, so a run is never applied twice: "ACC:2026-11", "LV:12".
+    ref = Column(String, index=True)
+    remarks = Column(String)
+    created_by = Column(String)
+    created_at = Column(DateTime, default=now)
+
+
+class HrAdvance(Base):
+    __tablename__ = "hr_advances"
+    id = Column(Integer, primary_key=True)
+    number = Column(String, index=True)
+    employee_id = Column(Integer, ForeignKey("employees.id"), index=True, nullable=False)
+    kind = Column(String, default="Advance")    # Advance | Loan
+    amount = Column(Float, default=0)
+    issued_on = Column(String)
+    #: Taken back from each salary, starting with this month.
+    emi = Column(Float, default=0)
+    recover_from = Column(String)               # YYYY-MM
+    mode = Column(String, default="Cash")
+    reason = Column(String)
+    status = Column(String, default="open", index=True)   # open | closed
+    voucher_id = Column(Integer, ForeignKey("vouchers.id"))
+    created_by = Column(String)
+    created_at = Column(DateTime, default=now)
+
+    employee = relationship("Employee")
+
+
+class HrAdvanceRecovery(Base):
+    __tablename__ = "hr_advance_recoveries"
+    id = Column(Integer, primary_key=True)
+    advance_id = Column(Integer, ForeignKey("hr_advances.id"), index=True, nullable=False)
+    month = Column(String)
+    date = Column(String)
+    amount = Column(Float, default=0)
+    source = Column(String, default="payroll")  # payroll | manual
+    payslip_id = Column(Integer, ForeignKey("hr_payslips.id", use_alter=True,
+                                            name="fk_recovery_payslip"), index=True)
+    voucher_id = Column(Integer, ForeignKey("vouchers.id"))
+    created_at = Column(DateTime, default=now)
+
+
+class HrIncentiveScheme(Base):
+    """How staff earn on what they sell.
+
+    `basis`: pct (a % of the line's value), per_piece (₹ per piece sold) or slab
+    (a % that rises with the person's total eligible sales in the month).
+    `filters` narrow which bill lines count: {"categories": [...], "brands": [...],
+    "barcodes": [...], "age_min": days, "age_max": days, "price_min", "price_max",
+    "locations": [...]}. A line can earn under every scheme it matches."""
+    __tablename__ = "hr_incentive_schemes"
+    id = Column(Integer, primary_key=True)
+    name = Column(String, nullable=False)
+    basis = Column(String, default="pct")
+    rate = Column(Float, default=0)
+    slabs = Column(JSON, default=list)          # [{"from": 0, "to": 100000, "pct": 1}]
+    filters = Column(JSON, default=dict)
+    #: Who earns under it: {"employees": [ids], "designations": [ids]}; empty = everyone.
+    applies_to = Column(JSON, default=dict)
+    valid_from = Column(String)
+    valid_to = Column(String)
+    active = Column(Boolean, default=True)
+    notes = Column(String)
+    created_at = Column(DateTime, default=now)
+
+
+class HrPayrollRun(Base):
+    __tablename__ = "hr_payroll_runs"
+    id = Column(Integer, primary_key=True)
+    month = Column(String, unique=True, index=True)
+    status = Column(String, default="draft", index=True)   # draft | approved | paid
+    computed_at = Column(DateTime)
+    approved_by = Column(String)
+    approved_at = Column(DateTime)
+    paid_on = Column(String)
+    paid_by = Column(String)
+    journal_voucher_id = Column(Integer, ForeignKey("vouchers.id"))
+    payment_voucher_id = Column(Integer, ForeignKey("vouchers.id"))
+    totals = Column(JSON, default=dict)
+    notes = Column(String)
+    created_by = Column(String)
+    created_at = Column(DateTime, default=now)
+
+
+class HrPayslip(Base):
+    __tablename__ = "hr_payslips"
+    __table_args__ = (UniqueConstraint("run_id", "employee_id", name="uq_hr_payslip"),)
+    id = Column(Integer, primary_key=True)
+    run_id = Column(Integer, ForeignKey("hr_payroll_runs.id"), index=True, nullable=False)
+    employee_id = Column(Integer, ForeignKey("employees.id"), index=True, nullable=False)
+    days_in_month = Column(Float)
+    payable_days = Column(Float)
+    paid_days = Column(Float)
+    lop_days = Column(Float)
+    present_days = Column(Float)
+    leave_days = Column(Float)
+    ot_hours = Column(Float)
+    #: {"basic": 9000, "hra": …, "ot": …, "incentive": …, "bonus": …, "arrears": …}
+    earnings = Column(JSON, default=dict)
+    #: {"pf": …, "esi": …, "pt": …, "tds": …, "advance": …, "other": …}
+    deductions = Column(JSON, default=dict)
+    employer = Column(JSON, default=dict)       # {"pf": …, "eps": …, "esi": …}
+    #: What a person added by hand, kept when the run is worked out again:
+    #: {"bonus", "arrears", "other_deduction", "hold", "remarks"}
+    adjustments = Column(JSON, default=dict)
+    gross = Column(Float, default=0)
+    total_deductions = Column(Float, default=0)
+    net = Column(Float, default=0)
+    #: Wages PF and ESI were worked on — the statutory returns need them.
+    pf_wages = Column(Float, default=0)
+    esi_wages = Column(Float, default=0)
+    payment_mode = Column(String)
+    snapshot = Column(JSON, default=dict)       # name, code, designation… as they were
+
+    employee = relationship("Employee")
+    run = relationship("HrPayrollRun")
+
+
+class HrReviewCycle(Base):
+    __tablename__ = "hr_review_cycles"
+    id = Column(Integer, primary_key=True)
+    name = Column(String, nullable=False)
+    period_from = Column(String)
+    period_to = Column(String)
+    status = Column(String, default="open")     # open | closed
+    created_at = Column(DateTime, default=now)
+
+
+class HrGoal(Base):
+    """A goal or KPI for one person in one review cycle. `metric` "sales" reads
+    the actual from their bills at the Store; anything else is entered."""
+    __tablename__ = "hr_goals"
+    id = Column(Integer, primary_key=True)
+    cycle_id = Column(Integer, ForeignKey("hr_review_cycles.id"), index=True, nullable=False)
+    employee_id = Column(Integer, ForeignKey("employees.id"), index=True, nullable=False)
+    title = Column(String, nullable=False)
+    kind = Column(String, default="KPI")        # KPI | Goal
+    metric = Column(String, default="manual")   # manual | sales | bills | attendance
+    weight = Column(Float, default=0)
+    target = Column(Float)
+    actual = Column(Float)
+    unit = Column(String)
+    self_rating = Column(Float)
+    manager_rating = Column(Float)
+    comments = Column(Text)
+
+
+class HrAppraisal(Base):
+    __tablename__ = "hr_appraisals"
+    __table_args__ = (UniqueConstraint("cycle_id", "employee_id", name="uq_hr_appraisal"),)
+    id = Column(Integer, primary_key=True)
+    cycle_id = Column(Integer, ForeignKey("hr_review_cycles.id"), index=True, nullable=False)
+    employee_id = Column(Integer, ForeignKey("employees.id"), index=True, nullable=False)
+    rating = Column(Float)                      # 1–5, the final word
+    score = Column(Float)                       # weighted from the goals, 0–100
+    strengths = Column(Text)
+    improvements = Column(Text)
+    comments = Column(Text)
+    increment_pct = Column(Float)
+    new_designation_id = Column(Integer, ForeignKey("hr_designations.id"))
+    effective_on = Column(String)
+    status = Column(String, default="draft")    # draft | submitted | approved | applied
+    reviewed_by = Column(String)
+    applied_at = Column(DateTime)
+
+
+class HrSetting(Base):
+    __tablename__ = "hr_settings"
+    key = Column(String, primary_key=True)
+    value = Column(JSON)

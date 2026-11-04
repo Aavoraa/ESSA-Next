@@ -40,8 +40,8 @@ import re
 from datetime import timedelta
 
 from .. import models, runtime
-from . import (audit as audit_svc, business_day, command_center as cc, crm_insights as crm, nlq,
-               pos_insights, stock_locations as stock_loc, trace as trace_svc)
+from . import (audit as audit_svc, business_day, command_center as cc, crm_insights as crm, hr as hr_svc,
+               nlq, pos_insights, stock_locations as stock_loc, trace as trace_svc)
 from .figures import inr, inr_short, plural, qty as fmt_qty, spoken_inr
 
 #: What each intent answers — the model reads these lines.
@@ -77,7 +77,14 @@ INTENTS = {
     "feedback": "Customer feedback and ratings: responses in a period, average stars, unhappy customers to call back, scores per feedback question.",
     "leads": "Sales leads / enquiries: open leads, follow-ups due today or overdue, new leads, won and lost, pipeline value.",
     "walkins": "Walk-ins / footfall at the door (Customer Divert): how many came in, how many bought, who served them.",
+    # ---- HR (only for an account that may open HR) ----
+    "payroll": "The salary payroll for a month: gross, net paid, PF, ESI, TDS, cost to company, and whether it is approved or paid. 'Last month's payroll', 'How much salary did we pay in October'.",
+    "attendance": "Staff attendance on a day (default today): who is present, absent, late, on leave or not marked yet. 'Who is absent today', 'Today's attendance'.",
+    "staff_leave": "Staff leave: who is on leave on a day or in a period, and leave requests waiting for approval. 'Who is on leave today', 'Pending leave requests'.",
+    "headcount": "How many people work here — by department and location — and who joined or left in a period. 'Headcount', 'How many employees joined this month'.",
 }
+#: The intents that read people's pay and personal records.
+HR_INTENTS = ("payroll", "attendance", "staff_leave", "headcount")
 NONE = "none"
 GROUPS = ("warehouse", "store", "floor", "counter", "cashier", "staff", "category",
           "product", "payment")
@@ -256,6 +263,18 @@ def _offline(db, question):
         intent, code = "customer" if crm_code[0] == "customer" else "trace", crm_code[1]
     elif code:
         intent = "trace"
+    elif re.search(r"\b(payroll|salary|salaries|wages|payslips?|pf|esi|ctc)\b|சம்பளம்", t) \
+            and not _has(t, ("supplier", "vendor")):
+        intent = "payroll"
+    elif re.search(r"\b(attendance|absent|absentees|came late|late today|punched|check[ -]?ins?)\b|வருகை", t) \
+            or re.search(r"\bwho (?:is|are|was|were) (?:present|late)\b", t):
+        intent = "attendance"
+    elif re.search(r"\bon leave\b|\bleave (?:requests?|applications?|approvals?)\b|\bleaves?\b.*\b(?:pending|approv|today|staff|employee)", t) \
+            or re.search(r"\b(?:staff|employee)s? leave", t):
+        intent = "staff_leave"
+    elif re.search(r"\b(headcount|head count|staff strength|how many (?:staff|employees|people work)|employees? (?:joined|left|resigned)|"
+                   r"new joiners?|joiners|attrition|resigned)\b", t):
+        intent = "headcount"
     elif _has(t, ("birthday", "anniversar", "பிறந்தநாள்")):
         intent = "birthdays"
     elif _has(t, ("gift voucher", "voucher", "gift card")):
@@ -1303,7 +1322,7 @@ _HINTS = (("customer", ("customer", "client", "buyer")),
           ("product", ("product", "item", "design", "sku", "garment")))
 
 
-def _lookup(db, question, read, role, allowed):
+def _lookup(db, question, read, role, allowed, hr=False):
     """A bare name, looked for everywhere in the software: someone who bills or
     sells at the tills, a customer, a user here, a supplier, a store or warehouse,
     a product. The first that matches answers; the rest are named beneath it.
@@ -1325,6 +1344,13 @@ def _lookup(db, question, read, role, allowed):
     per = _period(read, "today")
     found = []                       # (kind, what it is, intent, answer(), whole name?)
 
+    if hr:
+        emps = hr_svc.find_employees(db, name)
+        if emps:
+            found.append(("staff", "employee: " + ", ".join(e.name for e in emps[:3]), "employee",
+                          lambda: a_employee(db, emps[0]),
+                          any(name in (_norm(e.name), _norm(e.code)) for e in emps)))
+
     if pos_insights.available():
         staff = pos_insights.people_named(name)
         if staff:
@@ -1344,6 +1370,7 @@ def _lookup(db, question, read, role, allowed):
                           "customer", lambda: a_customer(db, {"person": name, "question": question},
                                                          base, per), bool(one)))
     at_tills = {_norm(p["name"]) for p in staff} if pos_insights.available() else set()
+    at_tills |= {_norm(e.name) for e in (emps if hr else [])}
     users = [u for u in db.query(models.User).all() if _starts_words(name, u.full_name, u.username)
              and _norm(u.full_name or u.username) not in at_tills]   # the same person, signed in to both
     if users:
@@ -1380,7 +1407,8 @@ def _lookup(db, question, read, role, allowed):
                           lambda: a_stock(db, {"item": name}, base, per), False))
     if not found:
         return None
-    # What the question said it was comes first, then a whole name over a part of one.
+    # What the question said it was comes first, then a whole name over a part of one
+    # (and the HR record before the same person's bills, being the fuller answer).
     found.sort(key=lambda f: (bool(hint) and f[0] != hint, not f[4]))
     for i, (kind, what, intent, answer, _whole) in enumerate(found):
         out = answer()
@@ -1391,6 +1419,119 @@ def _lookup(db, question, read, role, allowed):
             out["note"] = ((out.get("note") or "") + " Also matches — " + " · ".join(others) + ".").strip()
         return intent, out
     return None
+
+
+# ---------------------------------------------------------------------------
+#  HR — payroll, attendance, leave, headcount, one employee
+# ---------------------------------------------------------------------------
+def a_payroll(db, read, sc, per):
+    month = str(read["date_from"])[:7] if read.get("date_from") else None
+    runs = hr_svc.list_runs(db)
+    run = next((r for r in runs if r["month"] == month), None) if month else (runs[0] if runs else None)
+    if run is None:
+        label = hr_svc.month_label(month) if month else "Any month"
+        return _out("Payroll", "—", f"{label}'s payroll has not been worked out yet — HR → Payroll.",
+                    open_={"tab": "hr_payroll"}, ok=bool(month))
+    full = hr_svc.get_run(db, run["month"])
+    t = full["totals"]
+    title = f"Payroll — {full['label']}"
+    line = (f"{title} ({full['status']}): {inr(t.get('net', 0))} net to {plural(t.get('employees', 0), 'person', 'people')}; "
+            f"gross {inr(t.get('gross', 0))}, cost to company {inr(t.get('cost', 0))}.")
+    facts = [("Status", full["status"]), ("Gross", inr(t.get("gross", 0))), ("Net", inr(t.get("net", 0))),
+             ("PF (both shares)", inr(t.get("pf", 0) + t.get("employer_pf", 0))),
+             ("ESI (both shares)", inr(t.get("esi", 0) + t.get("employer_esi", 0))),
+             ("TDS", inr(t.get("tds", 0))), ("Professional Tax", inr(t.get("pt", 0))),
+             ("Advances recovered", inr(t.get("advance", 0)) if t.get("advance") else None),
+             ("Paid on", full.get("paid_on"))]
+    rows = [{"Employee": x["name"], "Code": x["code"], "Paid days": x["paid_days"], "Gross": x["gross"],
+             "Deductions": x["total_deductions"], "Net": x["net"]} for x in full["slips"]]
+    return _out(title, inr(t.get("net", 0)), line, f"{title}: {spoken_inr(t.get('net', 0))} net.", facts,
+                ["Employee", "Code", "Paid days", "Gross", "Deductions", "Net"], rows, None, {"tab": "hr_payroll"})
+
+
+def a_attendance(db, read, sc, per):
+    d = hr_svc.day_summary(db, per["from"])
+    c = d["counts"]
+    present = c.get("P", 0) + c.get("OD", 0) + c.get("HD", 0)
+    off = c.get("WO", 0) + c.get("H", 0)
+    title = _titled(per["label"], "Attendance")
+    if not d["total"]:
+        return _out(title, "—", f"{title}: nobody is employed yet — HR → Employees.", open_={"tab": "hr_employees"})
+    t = f" {(read.get('question') or '').lower()} "
+    line = (f"{title}: {present} of {d['total'] - off} present, {plural(c.get('L', 0), 'person', 'people')} on leave, "
+            f"{c.get('A', 0)} absent, {c.get('', 0)} not marked" + (f"; {len(d['late'])} came in late." if d["late"] else "."))
+    rows = d["rows"]
+    if _has(t, ("absent",)):
+        rows = [r for r in rows if r["_s"] in ("A", "")]
+    elif _has(t, ("late",)):
+        rows = d["late"]
+    return _out(title, f"{present}/{d['total'] - off}", line, None,
+                [("Present", str(present)), ("On leave", str(c.get("L", 0))), ("Absent", str(c.get("A", 0))),
+                 ("Not marked", str(c.get("", 0))), ("Weekly off / holiday", str(off) if off else None),
+                 ("Late", str(len(d["late"])) if d["late"] else None)],
+                ["Employee", "Code", "Department", "Status", "In", "Out", "Late (min)"],
+                [{k: v for k, v in r.items() if k != "_s"} for r in rows], None, {"tab": "hr_attendance"})
+
+
+def a_staff_leave(db, read, sc, per):
+    on = hr_svc.list_leave(db, status="approved", date_from=per["from"], date_to=per["to"])
+    pend = hr_svc.list_leave(db, status="pending")
+    title = _titled(per["label"], "Staff on Leave")
+    names = ", ".join(f"{r['employee']} ({r['type']})" for r in on[:6]) + (" …" if len(on) > 6 else "")
+    line = (f"{title}: " + (names if on else "nobody") + "."
+            + (f" {plural(len(pend), 'leave request')} waiting for approval." if pend else ""))
+    rows = [{"No": r["number"], "Employee": r["employee"], "Leave": r["type"], "From": r["from_date"], "To": r["to_date"],
+             "Days": r["days"], "Status": r["status"], "Reason": r["reason"]} for r in (on + pend)]
+    return _out(title, str(len(on)), line, None,
+                [("On leave", str(len(on))), ("Waiting for approval", str(len(pend)))],
+                ["No", "Employee", "Leave", "From", "To", "Days", "Status", "Reason"], rows, None, {"tab": "hr_leave"})
+
+
+def a_headcount(db, read, sc, per):
+    emps = hr_svc.list_employees(db, status="current")
+    joined = [e for e in hr_svc.list_employees(db, status="") if e["joined_on"] and per["from"] <= e["joined_on"] <= per["to"]]
+    left = [e for e in hr_svc.list_employees(db, status="") if e["last_working_day"] and per["from"] <= e["last_working_day"] <= per["to"]
+            and e["status"] != "active"]
+    by = {}
+    for e in emps:
+        by[e["department"] or "—"] = by.get(e["department"] or "—", 0) + 1
+    parts = ", ".join(f"{n} {d}" for d, n in sorted(by.items(), key=lambda x: -x[1])[:5])
+    line = (f"Headcount: {plural(len(emps), 'person', 'people')}" + (f" — {parts}" if parts else "") + ". "
+            f"{_titled(per['label'], 'Joined')}: {len(joined)}, left: {len(left)}.")
+    t = f" {(read.get('question') or '').lower()} "
+    rows = joined if _has(t, ("join",)) else left if _has(t, ("left", "resign", "exit", "attrition")) else emps
+    return _out("Headcount", str(len(emps)), line, None,
+                [("Working", str(len(emps))), ("Joined", str(len(joined))), ("Left", str(len(left))),
+                 ("Monthly gross", inr(sum(e["gross"] for e in emps)))],
+                ["Code", "Name", "Designation", "Department", "Location", "Joined", "Status"],
+                [{"Code": e["code"], "Name": e["name"], "Designation": e["designation"], "Department": e["department"],
+                  "Location": e["location"], "Joined": e["joined_on"], "Status": e["status"]} for e in rows],
+                None, {"tab": "hr_employees"})
+
+
+def a_employee(db, e):
+    """One employee's record, in a line."""
+    full = hr_svc.get_employee(db, e.id)
+    bal = ", ".join(f"{b['code']} {b['balance']:g}" for b in full["leave"] if b["balance"])
+    line = (f"{full['name']} ({full['code']}): {full['designation'] or 'no designation'}"
+            + (f", {full['department']}" if full["department"] else "") + (f" at {full['location']}" if full["location"] else "")
+            + f"; joined {_local_day(full['joined_on'])}, {inr(full['gross'])} a month"
+            + (f"; reports to {full['manager']}" if full["manager"] else "") + ".")
+    facts = [("Status", full["status"]), ("Mobile", full["phone"]), ("Service", full["service"]),
+             ("Gross / month", inr(full["gross"])), ("Leave in hand", bal or None), ("Shift", full["shift"]),
+             ("Store login", full["store_username"]),
+             ("Advances due", inr(sum(a["balance"] for a in full["advances"] if a["status"] == "open")) if any(
+                 a["status"] == "open" for a in full["advances"]) else None)]
+    rows = [{"Date": h["effective_on"], "Change": h["kind"], "Detail": h["detail"]} for h in full["history"][:10]]
+    return _out(full["name"], inr(full["gross"]), line, None, facts, ["Date", "Change", "Detail"], rows,
+                "Their role history, newest first.", {"tab": "hr_employees"})
+
+
+def _local_day(iso_day):
+    try:
+        return business_day.parse_day(iso_day).strftime("%d-%m-%Y")
+    except Exception:                                  # noqa: BLE001
+        return iso_day or "—"
 
 
 # ---------------------------------------------------------------------------
@@ -1660,10 +1801,11 @@ _DEFAULT_PERIOD = {"sales": "today", "sales_rank": "today", "discounts": "today"
                    "invoices": "today", "lr": "today",
                    "customers": "month", "customer_orders": "today", "gift_vouchers": "month",
                    "coupons": "month", "loyalty": "month", "feedback": "month", "leads": "month",
-                   "walkins": "today", "birthdays": "today", "bills": "today"}
+                   "walkins": "today", "birthdays": "today", "bills": "today",
+                   "attendance": "today", "staff_leave": "today", "headcount": "month"}
 
 
-def ask(db, question, role="admin", allowed=None):
+def ask(db, question, role="admin", allowed=None, hr=False):
     """Read the question, answer it in one line, keep the rows behind it.
     Always returns a dict; never raises for a question it cannot answer."""
     question = (question or "").strip()
@@ -1706,7 +1848,7 @@ def ask(db, question, role="admin", allowed=None):
     if intent == NONE or intent not in INTENTS:
         # Last try before giving up: a question that is only a name is asking
         # about whoever or whatever has it — anywhere in the software.
-        found = _lookup(db, question, read, role, allowed)
+        found = _lookup(db, question, read, role, allowed, hr)
         if found:
             interp["intent"] = found[0]
             interp["reading"] = interp["reading"] if interp["engine"] == "model" else "looked the name up everywhere"
@@ -1717,6 +1859,10 @@ def ask(db, question, role="admin", allowed=None):
                         "or type a GRN, bill or QR code to track it.",
                 "interpretation": interp, "suggestions": [e["q"] for e in examples()[:6]]}
 
+    if intent in HR_INTENTS and not hr:
+        return {"ok": False, "question": question, "intent": intent, "title": "Not allotted",
+                "line": "Pay, attendance and leave are on HR, which this account is not given (Users & Access).",
+                "interpretation": interp}
     try:
         sc = _scope(db, read, allowed)
     except Refused as r:
@@ -1738,6 +1884,7 @@ def ask(db, question, role="admin", allowed=None):
         "customer": a_customer, "customers": a_customers, "birthdays": a_birthdays,
         "customer_orders": a_customer_orders, "gift_vouchers": a_gift_vouchers, "coupons": a_coupons,
         "loyalty": a_loyalty, "feedback": a_feedback, "leads": a_leads, "walkins": a_walkins,
+        "payroll": a_payroll, "attendance": a_attendance, "staff_leave": a_staff_leave, "headcount": a_headcount,
     }
     read["question"] = question
     try:
@@ -1755,7 +1902,7 @@ def ask(db, question, role="admin", allowed=None):
 
     if intent == "customer" and not out.get("ok", True):
         # Not a customer — perhaps somebody or something else by that name.
-        found = _lookup(db, question, read, role, allowed)
+        found = _lookup(db, question, read, role, allowed, hr)
         if found:
             interp["intent"] = found[0]
             return {**found[1], "question": question, "intent": found[0], "interpretation": interp}
@@ -1796,4 +1943,8 @@ def examples():
         {"q": "How much did Priya sell this month?", "note": "one person's sales"},
         {"q": "Show R Kumar's bills this month", "note": "one customer's bills"},
         {"q": "Priya", "note": "any name — staff, customer, supplier, store, product"},
+        {"q": "Who is absent today?", "note": "HR · attendance"},
+        {"q": "Who is on leave today?", "note": "HR · leave"},
+        {"q": "Last month's payroll", "note": "HR · salaries"},
+        {"q": "Headcount", "note": "HR · people"},
     ]

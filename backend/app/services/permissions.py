@@ -76,6 +76,9 @@ SCREENS = [
     # grant: they are one set of books, and a statement is only as right as
     # the vouchers someone could or could not key.
     ("finance",    "Finance", "Office", "admin"),
+    # Every HR screen — employees, attendance, leave, payroll, performance — is
+    # one grant, as Finance is: pay is worked out from all of them together.
+    ("hr",         "HR", "Office", "admin"),
     ("reports",    "Reports", "Office", "admin"),
     ("suppliers",  "Suppliers", "Setup", "admin"),
     ("masters",    "Masters", "Setup", "admin"),
