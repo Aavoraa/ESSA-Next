@@ -53,8 +53,11 @@ def overview(request: Request, day: Optional[str] = None,
 @router.post("/ask")
 def ask(body: Question, request: Request, db: Session = Depends(get_db)):
     """One question, one line back first — then the rows behind it."""
+    # HR's answers (pay, attendance, leave, records) only for an account that
+    # could open HR itself — the same checks the gate makes on /api/hr.
+    from ..security import may_read
     return ask_anything.ask(db, body.q, role=_who(request).get("role"),
-                            allowed=_allowed(request))
+                            allowed=_allowed(request), hr=may_read(request, "/api/hr/options"))
 
 
 @router.get("/trace")

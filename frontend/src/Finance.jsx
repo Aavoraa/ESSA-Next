@@ -90,11 +90,11 @@ function downloadCsv(name, cols, rows) {
 // The page: the band across the top (title, what it holds, its actions), then
 // a filter column on the left and the work on the right — the layout every
 // Finance screen keeps, so moving between them never rearranges the furniture.
-function FinPage({ title, sub, actions, side, children, wideSide }) {
+function FinPage({ title, sub, actions, side, children, wideSide, crumb = 'Finance' }) {
   return (
     <div className="screen">
       <div className="pagehead">
-        <h2><span className="fin-crumb">Finance /</span> {title}</h2>
+        <h2><span className="fin-crumb">{crumb} /</span> {title}</h2>
         {sub && <span className="small pagesub">{sub}</span>}
         {actions && <div className="fin-actions">{actions}</div>}
       </div>
@@ -1891,6 +1891,12 @@ function TallyIntegration({ toast }) {
 // ==========================================================================
 //: key, label, blurb, icon — read by App for the menu, the rail and the
 //: category page, in the order the reference menu lists them.
+// The parts every Finance screen is drawn from, shared with HR (HR.jsx) so the
+// two office modules read as one app: the same page band, filter column,
+// pickers, dialogs and badges.
+export { FinPage, F, Sel, CheckList, DateRange, Empty, Modal, Badge, useRun, downloadCsv, errText,
+  monthStart, todayIso, fyStart, r2 }
+
 export const FIN_SCREENS = [
   ['fin_transport', 'Transport Payment', 'Pay transporters the freight on LR entries', 'truck'],
   ['fin_agent', 'Agent Payment', 'Pay agents their commission on LR entries', 'usercheck'],

@@ -119,6 +119,10 @@ POLICY = [
     # The books. Company-wide like supplier payments (one bank account pays
     # every warehouse's bills), and admin at both ends: it is all money.
     (r"^/api/finance", "admin", "admin", "finance"),
+    # People and their pay. Admin at both ends like the books: every screen
+    # carries someone's salary, bank account or personal details. (The device
+    # punch feed is in PUBLIC below and checks its own key.)
+    (r"^/api/hr", "admin", "admin", "hr"),
     (r"^/api/returns", "admin", "admin", "returns"),
     (r"^/api/dead-stock", "admin", "admin", "deadstock"),
 
@@ -202,6 +206,9 @@ PUBLIC = [
     # with nothing in it: there is no super admin to sign in as yet, so a token
     # check would lock the fix behind the thing it fixes.
     re.compile(r"^/api/admin/boot$"),
+    # An attendance device pushing punches. It has no account to sign in with;
+    # routers/hr.device_punches checks the device key from HR Settings instead.
+    re.compile(r"^/api/hr/device/punches$"),
     re.compile(r"^/docs"), re.compile(r"^/redoc"), re.compile(r"^/openapi.json$"),
 ]
 

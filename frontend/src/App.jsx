@@ -2,6 +2,7 @@ import React, { useEffect, useLayoutEffect, useState, useCallback, useRef, useMe
 import { api, session, warehouse, setUnauthorizedHandler, swr, readCache } from './api.js'
 import { parseDictation, coerceSpoken, dictationTargets } from './voicefill.js'
 import Finance, { FIN_SCREENS, FIN_REPORT_KEYS } from './Finance.jsx'
+import HR, { HR_SCREENS, HR_REPORTS } from './HR.jsx'
 
 // ---------- helpers ----------
 const num = (v) => (v === '' || v == null ? null : isNaN(+v) ? v : +v)
@@ -6575,7 +6576,7 @@ const reportMemoPut = (mk, v) => {
   }
 }
 
-function Reports({ toast = () => {}, finance = false }) {
+function Reports({ toast = () => {}, finance = false, hr = false }) {
   const [cat, setCat] = useState([])
   const [groups, setGroups] = useState([])
   const [key, setKey] = useState(null)
@@ -6599,6 +6600,9 @@ function Reports({ toast = () => {}, finance = false }) {
   // Drawn by the Finance screen itself, so they read exactly as they do there.
   // Only for an account that may open Finance: the server refuses it otherwise.
   const finReports = finance ? FIN_REPORT_KEYS.map((k) => FIN_SCREENS.find(([x]) => x === k)).filter(Boolean) : []
+  // …and HR's registers and statutory statements, drawn by the HR screen. They
+  // share the Finance slot below (`finKey`), told apart by their `hrrep:` key.
+  const hrReports = hr ? HR_REPORTS.map(([k, label]) => ['hrrep:' + k, label]) : []
   const [finKey, setFinKey] = useState(null)
   useEffect(() => {
     swr(() => api.storeReportCatalogue(), setStore).catch(() => {})
@@ -6739,7 +6743,7 @@ function Reports({ toast = () => {}, finance = false }) {
   // one holding the report on screen until another is picked. A search shows
   // every group's matches, under their group names, since the matches are what
   // is being looked for.
-  const curGroup = finKey ? 'finance' : storeKey ? 'store:' + (store.reports.find((r) => r.key === storeKey)?.group || '')
+  const curGroup = finKey ? (String(finKey).startsWith('hrrep:') ? 'hr' : 'finance') : storeKey ? 'store:' + (store.reports.find((r) => r.key === storeKey)?.group || '')
     : (cat.find((r) => r.key === key)?.group || '')
   const [openGrp, setOpenGrp] = useState(null)
   const grpChoices = [
@@ -6747,6 +6751,7 @@ function Reports({ toast = () => {}, finance = false }) {
     ...store.groups.map((g) => ({ key: 'store:' + g.key, name: 'Store · ' + g.name,
       n: store.reports.filter((r) => r.group === g.key).length })).filter((g) => g.n),
     ...(finReports.length ? [{ key: 'finance', name: 'Finance Reports', n: finReports.length }] : []),
+    ...(hrReports.length ? [{ key: 'hr', name: 'HR Reports', n: hrReports.length }] : []),
   ]
   const shownGrp = (openGrp && grpChoices.some((g) => g.key === openGrp)) ? openGrp
     : (grpChoices.some((g) => g.key === curGroup) ? curGroup : grpChoices[0]?.key)
@@ -6758,7 +6763,7 @@ function Reports({ toast = () => {}, finance = false }) {
   return (
     <div className="body">
       <Sidebar id="reports" label="Reports">
-        <div className="head"><h3>Reports · {cat.length + store.reports.length + finReports.length}</h3></div>
+        <div className="head"><h3>Reports · {cat.length + store.reports.length + finReports.length + hrReports.length}</h3></div>
         <SearchBox value={rq} onChange={setRq} placeholder="Search reports…" />
         {!rqn && (
           <select className="rep-pick" value={shownGrp || ''} aria-label="Report group"
@@ -6822,9 +6827,30 @@ function Reports({ toast = () => {}, finance = false }) {
               </div>
             )
           })()}
+          {(() => {
+            const list = hrReports.filter(([, label]) => !rqn || label.toLowerCase().includes(rqn))
+            if (!list.length || !isOpen('hr')) return null
+            return (
+              <div key="hr">
+                {rqn ? grpHead('hr', 'HR Reports', list.length) : (
+                  <div style={{ padding: '14px 14px 2px', fontSize: 11, fontWeight: 700, textTransform: 'uppercase',
+                    letterSpacing: '.5px', borderTop: '1px solid var(--line)', marginTop: 8 }}>
+                    HR reports <span style={{ opacity: 0.6, fontWeight: 400 }}>· people and pay</span></div>
+                )}
+                {list.map(([k, label]) => (
+                  <div key={k} className={'doc-row' + (finKey === k ? ' sel' : '')}
+                    style={{ padding: '8px 14px' }} onClick={() => pickFin(k)}>
+                    <div className="t" style={{ fontWeight: finKey === k ? 700 : 400 }}>{label}</div>
+                  </div>
+                ))}
+              </div>
+            )
+          })()}
         </div>
       </Sidebar>
-      {finKey && <Finance key={finKey} screen={finKey} toast={toast} />}
+      {finKey && (String(finKey).startsWith('hrrep:')
+        ? <HR key={finKey} screen="hr_reports" report={finKey.slice(6)} toast={toast} />
+        : <Finance key={finKey} screen={finKey} toast={toast} />)}
       {storeKept.length > 0 && (
         <div style={{ flex: 1, display: storeKey && !finKey ? 'flex' : 'none', flexDirection: 'column', minHeight: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px var(--gutter)', borderBottom: '1px solid var(--line)' }}>
@@ -16808,7 +16834,9 @@ function Catalogues({ toast }) {
 //  So the menu is not one list with things greyed out. It is two lists, and
 //  which one you get says where you are standing.
 // ==========================================================================
-const COMPANY_ONLY = new Set(['command', 'audit', 'central', 'locations'])
+const COMPANY_ONLY = new Set(['command', 'audit', 'central', 'locations',
+  // HR is the company's, like CRM: one payroll pays every warehouse and store
+  ...HR_SCREENS.map(([k]) => k)])
 
 //: Screens that live as tabs inside Invoice Entry: screen key -> its tab there.
 //: They leave the side menu, and anything that opens one — a dashboard tile,
@@ -16825,7 +16853,8 @@ const COMPANY_LEVEL = new Set(['command', 'audit', 'central', 'locator', 'report
                                // the books are company-wide, and so are supplier
                                // payments (services/scope.py): one bank account
                                // pays every warehouse's bills
-                               'payments', ...FIN_SCREENS.map(([k]) => k)])
+                               'payments', ...FIN_SCREENS.map(([k]) => k),
+                               ...HR_SCREENS.map(([k]) => k)])
 
 //: Four ranked roles — services/users.py holds the same four, and everything is
 //: compared by RANK so the top one inherits every screen below it.
@@ -16894,6 +16923,8 @@ const MODULES = [
   // The books (Finance.jsx). One grant covers them all — `perm` names it — because
   // they are one set of books: a statement is only as right as the vouchers.
   ...FIN_SCREENS.map(([key, label, blurb]) => ({ key, icon: '₹', label, blurb, min: 'admin', perm: 'finance' })),
+  // People and their pay (HR.jsx) — one grant for all of it, as for the books.
+  ...HR_SCREENS.map(([key, label, blurb]) => ({ key, icon: '👥', label, blurb, min: 'admin', perm: 'hr' })),
   { key: 'reports', icon: '📊', label: 'Reports', blurb: 'Every register, filtered and exportable', min: 'admin' },
   { key: 'suppliers', icon: '🏭', label: 'Suppliers', blurb: 'Supplier master and trained invoice formats', min: 'admin' },
   { key: 'masters', icon: '⚙', label: 'Masters', blurb: 'Categories, agents, transporters and the dropdown lists', min: 'admin' },
@@ -17161,6 +17192,7 @@ const NAV_ICON = {
   'pos:customer_divert': 'signpost', 'pos:leads': 'userplus', 'pos:self_registration': 'qr',
   'ws:central': 'grid', 'ws:warehouse': 'building', 'ws:store': 'store',
   ...Object.fromEntries(FIN_SCREENS.map(([k, , , icon]) => [k, icon])),
+  ...Object.fromEntries(HR_SCREENS.map(([k, , , icon]) => [k, icon])),
 }
 
 // Two letters for the avatar: the initials of a two-word name, or the first two
@@ -17308,6 +17340,7 @@ const NAV_RAIL = {
     { key: 'stock', label: 'Stock', icon: 'boxes', screens: ['locator'] },
     { key: 'crm', label: 'CRM', icon: 'crm', screens: CRM_SCREENS },
     { key: 'finance', label: 'Finance', icon: 'rupee', screens: ['payments', ...FIN_SCREENS.map(([k]) => k)] },
+    { key: 'hr', label: 'HR', icon: 'users', screens: HR_SCREENS.map(([k]) => k) },
     { key: 'reports', label: 'Reports', icon: 'trending', screens: ['reports', 'audit'] },
     { key: 'setup', label: 'Setup', icon: 'sliders', screens: ['locations', 'users'] },
   ],
@@ -19476,8 +19509,11 @@ export default function App() {
         <Payments toast={toast} />
       ) : String(k).startsWith('fin_') ? (
         <Finance key={k} screen={k} toast={toast} />
+      ) : String(k).startsWith('hr_') ? (
+        <HR key={k} screen={k} toast={toast} go={setTab} />
       ) : k === 'reports' ? (
-        <Reports toast={toast} finance={modules.some((m) => m.perm === 'finance')} />
+        <Reports toast={toast} finance={modules.some((m) => m.perm === 'finance')}
+          hr={modules.some((m) => m.perm === 'hr')} />
       ) : k === 'masters' ? (
         // No role check here any more — the guard above the chain covers every
         // module from its MODULES entry, so this cannot drift out of step with

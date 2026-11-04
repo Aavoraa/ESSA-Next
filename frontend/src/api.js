@@ -638,6 +638,22 @@ export const api = {
     method, headers: { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body) }).then(J),
 
+  // HR — the same pair for every HR screen, plus a multipart upload for
+  // documents and attendance files.
+  hrGet: (path, params) => {
+    const qs = new URLSearchParams()
+    Object.entries(params || {}).forEach(([k, v]) => {
+      if (v == null || v === '' || (Array.isArray(v) && !v.length)) return
+      qs.set(k, Array.isArray(v) ? v.join(',') : v)
+    })
+    const s = qs.toString()
+    return fetch(`/api/hr/${path}${s ? '?' + s : ''}`).then(J)
+  },
+  hrSend: (method, path, body) => fetch(`/api/hr/${path}`, {
+    method, headers: { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body) }).then(J),
+  hrUpload: (path, form) => fetch(`/api/hr/${path}`, { method: 'POST', body: form }).then(J),
+
   // purchase returns
   listReturns: () => fetch('/api/returns').then(J),
   getReturn: (id) => fetch(`/api/returns/${id}`).then(J),
