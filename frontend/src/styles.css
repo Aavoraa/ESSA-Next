@@ -3598,7 +3598,7 @@ table.hr-roster th.hol { color: var(--att-h); }
 .hr-docadd .fin-sidehead { border-top: none; padding-top: 0; }
 .hr-folders { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 12px; }
 .hr-folder { border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); padding: 10px 12px; }
-.hr-folder.empty { background: var(--panel-2); }
+.hr-folder.none { background: var(--panel-2); }
 .hr-folder.note { border-style: dashed; }
 .hr-folderhead { display: flex; align-items: center; gap: 7px; color: var(--brand); padding-bottom: 8px;
   border-bottom: 1px solid var(--line); margin-bottom: 6px; }
@@ -3618,3 +3618,55 @@ table.hr-roster th.hol { color: var(--att-h); }
   .hr-bannerbody { flex-wrap: wrap; }
   .hr-bannerinfo { padding-top: 0; flex-basis: 100%; }
 }
+
+/* a select you can type into, add to and edit from */
+.hr-combo { position: relative; }
+.hr-combo input { width: 100%; padding-right: 30px; text-overflow: ellipsis; }
+.hr-combo.editable input { padding-right: 58px; }
+.hr-combocaret { position: absolute; right: 10px; top: 50%; transform: translateY(-50%) rotate(90deg); pointer-events: none; color: var(--muted); }
+.hr-comboedit { position: absolute; right: 30px; top: 50%; transform: translateY(-50%); display: inline-flex; padding: 4px;
+  border: none; border-radius: 6px; background: transparent; color: var(--brand); cursor: pointer; }
+.hr-comboedit:hover { background: var(--brand-100); }
+.hr-combolist { position: fixed; z-index: 200; max-height: 260px; overflow: auto; margin: 0; padding: 4px; list-style: none;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow-3); }
+.hr-combolist li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 10px;
+  border-radius: 6px; cursor: pointer; font-size: var(--fs-sm); }
+.hr-combolist li[aria-selected=true] { background: var(--brand-100); }
+.hr-combolist li.cur span { font-weight: 600; color: var(--brand); }
+.hr-combolist li small { color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; }
+.hr-combolist li.blank { color: var(--muted); }
+.hr-combolist li.create { justify-content: flex-start; gap: 6px; color: var(--brand); font-weight: 600;
+  border-top: 1px dashed var(--line); margin-top: 2px; }
+.hr-combolist li.none { color: var(--muted); cursor: default; font-size: var(--fs-xs); }
+
+/* filling the employee form from their papers */
+.hr-reader { border: 1px dashed var(--brand-300, var(--line)); border-radius: var(--radius); background: var(--panel-2);
+  padding: 10px 12px; margin-bottom: 10px; transition: background .15s, border-color .15s; }
+.hr-reader.drag { background: var(--brand-100); border-color: var(--brand); }
+.hr-readerhead { display: flex; align-items: center; gap: 10px; }
+.hr-readerhead > div { flex: 1; min-width: 0; }
+.hr-readericon { flex: none; width: 32px; height: 32px; border-radius: 50%; display: inline-flex; align-items: center;
+  justify-content: center; background: var(--brand-100); color: var(--brand); }
+.hr-readdocs { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 8px; margin-top: 10px; }
+.hr-readdoc { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--panel); }
+.hr-readdoc.error { border-color: var(--danger); }
+.hr-readdoc.reading { opacity: .75; }
+.hr-readdoc > img, .hr-readdoc > .hr-docicon { flex: none; width: 40px; height: 40px; border-radius: 6px; object-fit: cover; border: 1px solid var(--line); }
+.hr-readdocbody { flex: 1; min-width: 0; }
+.hr-readdoctop { display: flex; align-items: center; gap: 6px; }
+.hr-readdocname { flex: 1; min-width: 0; font-size: var(--fs-xs); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hr-readx { flex: none; display: inline-flex; padding: 3px; border: none; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; }
+.hr-readx:hover { background: var(--danger-bg, var(--panel-2)); color: var(--danger); }
+.hr-readdocmeta { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+.hr-readdocmeta select { flex: 1; min-width: 0; font-size: var(--fs-xs); padding: 3px 6px; height: auto; }
+.hr-fileit { flex: none; display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-xs); color: var(--text-2); cursor: pointer; white-space: nowrap; }
+.hr-fileit input { margin: 0; }
+.hr-readnote { margin-top: 6px; }
+.hr-readtable { margin-top: 10px; background: var(--panel); }
+.hr-readtable tr.same td { color: var(--muted); }
+.hr-readtable tr.differs td:nth-child(4) { color: var(--warn, #b45309); }
+.hr-readtable .badge { margin-left: 6px; }
+.hr-readfoot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; }
+.hr-good { color: var(--brand); font-weight: 700; }
+.hr-bad { color: var(--danger); }

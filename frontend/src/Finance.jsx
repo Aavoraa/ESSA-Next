@@ -15,7 +15,7 @@
 //  filter column), Sel / CheckList (pickers), and the T-statement for the
 //  accounts. Dates are typed and shown DD-MM-YYYY and sent ISO, as everywhere.
 // ==========================================================================
-import React, { useEffect, useMemo, useState, useCallback } from 'react'
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { api } from './api.js'
 import { Section, Stat, DateField, SearchBox, money, fmtDate, Icon } from './App.jsx'
 
@@ -171,12 +171,18 @@ function Empty({ children }) {
   return <div className="fin-empty">{children}</div>
 }
 
+// Dialogs open on top of dialogs; Escape closes only the top one.
+const openModals = []
 function Modal({ title, onClose, children, foot, wide }) {
+  const close = useRef(onClose)
+  close.current = onClose
   useEffect(() => {
-    const esc = (e) => { if (e.key === 'Escape') onClose() }
+    const me = {}
+    openModals.push(me)
+    const esc = (e) => { if (e.key === 'Escape' && openModals[openModals.length - 1] === me) close.current() }
     document.addEventListener('keydown', esc)
-    return () => document.removeEventListener('keydown', esc)
-  }, [onClose])
+    return () => { document.removeEventListener('keydown', esc); openModals.splice(openModals.indexOf(me), 1) }
+  }, [])
   return (
     <div className="modal-back" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}>
       <div className={'modal fin-modal' + (wide ? ' wide' : '')} role="dialog" aria-modal="true" aria-label={title}>

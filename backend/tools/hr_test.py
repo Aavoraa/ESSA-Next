@@ -190,6 +190,21 @@ dep = {d["name"]: d["id"] for d in o["departments"]}
 desig = {d["name"]: d["id"] for d in o["designations"]}
 general = o["shifts"][0]["id"]
 
+# lists typed into from the employee form: added on the spot, never twice
+r = send("POST", "masters/designations", {"name": " Embroiderer ", "department_id": dep["Alteration"]})
+eq("a designation typed in is added to its department", (r.json()["name"], r.json()["department_id"]), ("Embroiderer", dep["Alteration"]))
+r = send("POST", "masters/designations", {"name": "embroiderer", "department_id": dep["Alteration"]}, expect=400)
+has("…the same one again in that department is refused", r.text, "already a designation called Embroiderer in Alteration")
+eq("…though another department may have its own", send("POST", "masters/designations",
+                                                         {"name": "Embroiderer", "department_id": dep["Sales"]}).status_code, 200)
+emb = [d for d in get("masters/designations") if d["name"] == "Embroiderer"]
+eq("…renaming one onto the other's name is refused", send("PUT", "masters/designations/%d" % emb[1]["id"],
+                                                          {"department_id": dep["Alteration"]}, expect=400).status_code, 400)
+send("DELETE", "masters/designations/%d" % emb[1]["id"])
+has("a second shift of the same name is refused", send("POST", "masters/shifts", {"name": "general "}, expect=400).text,
+    "already a shift called General")
+eq("a shift can be renamed to itself", send("PUT", "masters/shifts/%d" % general, {"name": "General"}).status_code, 200)
+
 # ===========================================================================
 head("employee records — joining, the role history and the hierarchy")
 r = send("POST", "employees", {"name": "Kumar Raj", "joined_on": "2020-04-01", "phone": "9876500010", "dob": "14-03-1982",
@@ -274,6 +289,78 @@ eq("a new picture changes the version, so no browser shows the old one", r.json(
 r = client.delete(f"/api/hr/employees/{priya['id']}/photo", headers=H)
 eq("removing it takes it off the record", r.json()["photo"], None)
 eq("…but not out of the file", sum(d["doc_type"] == "Photo" for d in r.json()["documents"]), 2)
+
+# ===========================================================================
+head("filling the form from a person's papers")
+from backend.app.services import hr_read                             # noqa: E402
+
+
+def text_pdf(lines):
+    """A one-page PDF with real text on it, as a scanner's OCR or a letter has."""
+    body = "BT /F1 11 Tf 40 780 Td 14 TL " + " ".join("(%s) '" % s for s in lines) + " ET"
+    objs = ["<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R "
+            "/Resources << /Font << /F1 5 0 R >> >> >>",
+            "<< /Length %d >>\nstream\n%s\nendstream" % (len(body), body),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"]
+    out, offs = b"%PDF-1.4\n", []
+    for i, o_ in enumerate(objs, 1):
+        offs.append(len(out))
+        out += b"%d 0 obj\n%s\nendobj\n" % (i, o_.encode())
+    xref = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objs) + 1) + b"".join(b"%010d 00000 n \n" % x for x in offs)
+    return out + b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objs) + 1, xref)
+
+
+def read(name, raw):
+    return client.post("/api/hr/read-document", headers=H, files={"file": (name, raw, "application/octet-stream")})
+
+
+real_ready, real_vision, real_photo = hr_read._vision_ready, hr_read.read_vision, hr_read._photo_text
+hr_read._vision_ready = lambda: False
+hr_read._photo_text = lambda raw, ext: None
+r = read("pan.pdf", text_pdf(["INCOME TAX DEPARTMENT", "GOVT. OF INDIA", "Permanent Account Number Card",
+                              "BXRPK4821M", "Date of Birth 05/03/1990"]))
+eq("with no key, a PAN card PDF is still known for one", (r.json()["doc_type"], r.json()["number"]), ("PAN", "BXRPK4821M"))
+eq("…and its fixed-pattern numbers read, day-first dates the Indian way",
+   (r.json()["fields"].get("pan"), r.json()["fields"].get("dob")), ("BXRPK4821M", "1990-03-05"))
+has("…saying the key would read the rest", r.json()["note"], "Set the key in Settings")
+r = read("cheque.pdf", text_pdf(["STATE BANK OF INDIA", "IFSC SBIN0001234", "A/c No 301245678912"]))
+eq("twelve digits on a cheque are not taken for an Aadhaar",
+   (r.json()["doc_type"], r.json()["fields"].get("ifsc"), r.json()["fields"].get("aadhaar")), ("Bank proof", "SBIN0001234", None))
+r = read("aadhaar.jpg", PNG)
+eq("a photo with no key and no OCR is not guessed at", (r.json()["doc_type"], r.json()["fields"]), (None, {}))
+has("…and says what would read it", r.json()["note"], "needs the Claude key")
+eq("only PDFs and photos are read", read("cv.docx", b"PK").status_code, 400)
+eq("an empty file is refused", read("blank.pdf", b"").status_code, 400)
+
+hr_read._vision_ready = lambda: True
+hr_read.read_vision = lambda raw, media: {
+    "document_type": "Aadhaar", "document_number": "4821 7730 1192", "issued_on": None, "expires_on": None, "title": None,
+    "person": {"name": "MEENA SELVAM", "father_name": "S/O", "gender": "female", "dob": "14/08/1996",
+               "blood_group": "B +ve", "phone": "+91 98401 22334", "aadhaar": "4821-7730-1192", "pan": "not a pan",
+               "address": "12, North Street,\n Madurai 625001", "designation": "cashier", "bank_account": "12"}}
+f_ = read("aadhaar.jpg", PNG).json()
+eq("the model's reading comes back as the form stores it", {k: f_["fields"].get(k) for k in
+   ("name", "gender", "dob", "blood_group", "phone", "aadhaar")},
+   {"name": "Meena Selvam", "gender": "Female", "dob": "1996-08-14", "blood_group": "B+", "phone": "9840122334",
+    "aadhaar": "4821 7730 1192"})
+eq("…what fails its own pattern is dropped, not suggested", [k for k in ("pan", "bank_account") if k in f_["fields"]], [])
+eq("…an ID card's address is the permanent one", (f_["fields"].get("permanent_address"), "address" in f_["fields"]),
+   ("12, North Street, Madurai 625001", False))
+eq("…and a designation it names is matched to the list, with its department",
+   (f_["designation_id"], f_["department_id"]), (desig["Cashier"], dep["Billing"]))
+hr_read.read_vision = lambda raw, media: {"document_type": "Relieving letter", "person": {"designation": "Senior Merchandiser"}}
+eq("a title not in the list is offered as new", read("rel.pdf", b"%PDF-1.4").json()["designation_id"], None)
+
+
+def refuse(raw, media):
+    raise RuntimeError("network down")
+
+
+hr_read.read_vision = refuse
+eq("when the model cannot be reached the screen is told so", read("pan.jpg", PNG).status_code, 502)
+hr_read._vision_ready, hr_read.read_vision, hr_read._photo_text = real_ready, real_vision, real_photo
 
 # ===========================================================================
 head("attendance — by hand, from a file, from a device and from the till")

@@ -11,7 +11,8 @@
 //  the two office modules read as one app. Dates are typed and shown
 //  DD-MM-YYYY and sent ISO; a month is YYYY-MM.
 // ==========================================================================
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { api } from './api.js'
 import { Stat, DateField, money, fmtDate, Icon } from './App.jsx'
 import {
@@ -164,6 +165,139 @@ function Bars({ rows, fmt = (v) => v, tone }) {
 
 // a form's two-way binding, for inputs, selects and ticks alike
 const binder = (setF) => (k) => (v) => setF((p) => ({ ...p, [k]: v?.target ? (v.target.type === 'checkbox' ? v.target.checked : v.target.value) : v }))
+
+// A select you can type into. Typing narrows the list; given onCreate it also
+// offers to add what was typed (onCreate returns the new value, or null when it
+// takes over, say by opening a form). Given onEdit, a pencil beside it edits the
+// chosen entry. Options are strings or { value, label, sub }.
+function Combo({ value, onChange, options, blankLabel = '—', onCreate, noun = '', onEdit, disabled, emptyNote }) {
+  const opts = useMemo(() => (options || []).map((o) => (typeof o === 'object' ? o : { value: o, label: o })), [options])
+  const cur = opts.find((o) => String(o.value) === String(value ?? ''))
+  const [open, setOpen] = useState(false)
+  const [q, setQ] = useState('')
+  const [hi, setHi] = useState(0)
+  const [busy, setBusy] = useState(false)
+  const [pos, setPos] = useState(null)
+  const input = useRef(null)
+  const list = useRef(null)
+  const id = useId()
+  const t = q.trim().toLowerCase()
+  const hits = t ? opts.filter((o) => `${o.label} ${o.sub || ''}`.toLowerCase().includes(t)) : opts
+  const exact = t && opts.some((o) => String(o.label).toLowerCase() === t)
+  const items = [
+    ...(t ? [] : [{ value: '', label: blankLabel, blank: true }]),
+    ...hits,
+    ...(onCreate && t && !exact ? [{ create: true, label: q.trim() }] : []),
+  ]
+  const place = useCallback(() => {
+    const r = input.current?.getBoundingClientRect()
+    if (!r) return
+    const below = window.innerHeight - r.bottom
+    setPos(below < 240 && r.top > below
+      ? { left: r.left, width: r.width, bottom: window.innerHeight - r.top + 4 }
+      : { left: r.left, width: r.width, top: r.bottom + 4 })
+  }, [])
+  const show = () => { if (disabled) return; setQ(''); setHi(0); place(); setOpen(true) }
+  const hide = () => { setOpen(false); setQ('') }
+  useEffect(() => {
+    if (!open) return undefined
+    const away = (ev) => { if (!input.current?.parentNode.contains(ev.target) && !list.current?.contains(ev.target)) hide() }
+    document.addEventListener('mousedown', away)
+    window.addEventListener('resize', place)
+    window.addEventListener('scroll', place, true)
+    return () => { document.removeEventListener('mousedown', away); window.removeEventListener('resize', place); window.removeEventListener('scroll', place, true) }
+  }, [open, place])
+  useEffect(() => { list.current?.querySelector('[aria-selected=true]')?.scrollIntoView({ block: 'nearest' }) }, [hi, open])
+  const pick = async (it) => {
+    if (!it) return
+    hide()
+    if (!it.create) { onChange(String(it.value)); return }
+    setBusy(true)
+    try {
+      const v = await onCreate(it.label)
+      if (v != null) onChange(String(v))
+    } finally { setBusy(false) }
+  }
+  const key = (ev) => {
+    if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+      ev.preventDefault()
+      if (!open) { show(); return }
+      setHi((h) => (h + (ev.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length)
+    } else if (ev.key === 'Enter' && open) {
+      ev.preventDefault(); pick(items[hi])
+    } else if (ev.key === 'Escape' && open) {
+      ev.stopPropagation(); hide()
+    } else if (ev.key === 'Tab') hide()
+  }
+  return (
+    <div className={'hr-combo' + (onEdit && cur ? ' editable' : '')}>
+      <input ref={input} role="combobox" aria-expanded={open} aria-controls={id} aria-autocomplete="list"
+        aria-activedescendant={open && items[hi] ? `${id}-${hi}` : undefined} disabled={disabled || busy}
+        value={open ? q : busy ? 'Adding…' : cur?.label || ''} placeholder={open ? (cur?.label || 'Type to search') : blankLabel}
+        onFocus={show} onClick={() => !open && show()} onChange={(ev) => { setQ(ev.target.value); setHi(0); if (!open) { place(); setOpen(true) } }}
+        onKeyDown={key} />
+      <Icon name="chevron" size={14} className="hr-combocaret" />
+      {onEdit && cur && <button type="button" className="hr-comboedit" disabled={disabled} title={`Edit ${cur.label}`}
+        aria-label={`Edit ${cur.label}`} onClick={() => onEdit(cur)}><Icon name="pencil" size={13} /></button>}
+      {open && pos && createPortal(
+        <ul ref={list} id={id} role="listbox" className="hr-combolist" style={pos} onMouseDown={(ev) => ev.preventDefault()}>
+          {items.map((it, i) => (
+            <li key={it.create ? '+new' : `v${it.value}`} id={`${id}-${i}`} role="option" aria-selected={i === hi}
+              className={(it.blank ? 'blank' : '') + (it.create ? ' create' : '') + (!it.create && !it.blank && String(it.value) === String(value ?? '') ? ' cur' : '')}
+              onMouseEnter={() => setHi(i)} onClick={() => pick(it)}>
+              {it.create ? <><Icon name="plus" size={13} /> Add {noun} “{it.label}”</> : <><span>{it.label}</span>{it.sub && <small>{it.sub}</small>}</>}
+            </li>
+          ))}
+          {!hits.length && t && !onCreate && <li className="none">Nothing matches “{q.trim()}”</li>}
+          {!opts.length && !t && emptyNote && <li className="none">{emptyNote}</li>}
+        </ul>, document.body)}
+    </div>
+  )
+}
+
+// The lists an employee's job is picked from, and how each is edited — shared
+// by HR Settings, Shifts and the employee form, so all three edit them alike.
+const SHIFT_BLANK = { name: '', code: '', start_time: '10:00', end_time: '21:00', break_minutes: 60, grace_minutes: 10, full_day_hours: 9,
+  half_day_hours: 4.5, ot_after_minutes: 30, color: '#2F8F68', active: true }
+const masterDefs = (o) => ({
+  departments: { noun: 'department', blank: { name: '', code: '', head_id: '', active: true },
+    fields: [['name', 'Name', 'text', true], ['code', 'Code'], ['head_id', 'Head', 'select', false, o.employees.map((e) => ({ value: e.id, label: e.name }))], ['active', 'In use', 'check']] },
+  designations: { noun: 'designation', blank: { name: '', department_id: '', grade: '', level: 4, active: true },
+    fields: [['name', 'Name', 'text', true], ['department_id', 'Department', 'select', false, o.departments.map((d) => ({ value: d.id, label: d.name }))],
+      ['grade', 'Grade'], ['level', 'Level in the chart (1 = top)', 'number'], ['active', 'In use', 'check']] },
+  shifts: { noun: 'shift', blank: SHIFT_BLANK,
+    fields: [['name', 'Name', 'text', true], ['code', 'Code'], ['start_time', 'Starts', 'time', true], ['end_time', 'Ends', 'time', true],
+      ['break_minutes', 'Break (min)', 'number'], ['grace_minutes', 'Grace (min)', 'number'], ['full_day_hours', 'Full day (hours)', 'number'],
+      ['half_day_hours', 'Half day (hours)', 'number'], ['ot_after_minutes', 'Overtime after (min)', 'number'], ['color', 'Colour', 'color'],
+      ['active', 'In use', 'check']] },
+})
+
+function MasterEditor({ kind, noun, fields, value, toast, onClose, onSaved }) {
+  const [edit, setEdit] = useState(value)
+  const [busy, run] = useRun(toast)
+  const save = async () => {
+    const body = { ...edit }
+    fields.forEach(([k, , t]) => { if (t === 'number' || k.endsWith('_id')) body[k] = body[k] === '' || body[k] == null ? null : +body[k] })
+    const r = await run(() => (edit.id ? api.hrSend('PUT', `masters/${kind}/${edit.id}`, body) : api.hrSend('POST', `masters/${kind}`, body)), `✓ ${noun} saved`)
+    if (r) onSaved(r)
+  }
+  return (
+    <Modal title={edit.id ? `Edit ${noun} — ${value.name}` : `New ${noun}`} onClose={onClose}
+      foot={<><div className="spacer" /><button className="btn" onClick={onClose}>Cancel</button>
+        <button className="btn primary" disabled={busy || !String(edit.name || '').trim()} onClick={save}>Save</button></>}>
+      <div className="fin-form">
+        {fields.map(([k, l, t = 'text', req, opts]) => (
+          t === 'check' ? <F key={k} label={l}><label className="fin-check"><input type="checkbox" checked={edit[k] !== false && !!edit[k]}
+            onChange={(e) => setEdit({ ...edit, [k]: e.target.checked })} /> Yes</label></F>
+            : t === 'date' ? <DateField key={k} label={l} required={req} value={edit[k] || ''} onChange={(v) => setEdit({ ...edit, [k]: v })} />
+              : t === 'select' ? <F key={k} label={l} req={req}><Sel value={edit[k] ?? ''} onChange={(v) => setEdit({ ...edit, [k]: v })} placeholder="—" options={opts} /></F>
+                : <F key={k} label={l} req={req}><input type={t} value={edit[k] ?? ''} autoFocus={k === 'name' && !edit.id}
+                  onChange={(e) => setEdit({ ...edit, [k]: e.target.value })} /></F>
+        ))}
+      </div>
+    </Modal>
+  )
+}
 
 // ==========================================================================
 //  HR Dashboard
@@ -412,16 +546,80 @@ function EmployeeModal({ id, toast, onClose, onSaved }) {
     body.salary = Object.fromEntries(o.components.map(([k]) => [k, +f.salary[k] || 0]))
     const r = await run(() => (eid ? api.hrSend('PUT', `employees/${eid}`, body) : api.hrSend('POST', 'employees', body)),
       (x) => `✓ ${x.name} (${x.code}) saved`)
-    if (r) { fill(r); if (!eid) setEid(r.id); onSaved(); reloadOpts() }
+    if (!r) return
+    // the papers the form was filled from go into their file, now there is one
+    const filed = []
+    for (const x of reads.filter((y) => y.attach && y.status !== 'reading')) {
+      const fd = new FormData()
+      fd.append('doc_type', x.doc_type || 'Other')
+      fd.append('number', x.number || '')
+      fd.append('issued_on', x.result?.issued_on || '')
+      fd.append('expires_on', x.result?.expires_on || '')
+      fd.append('title', x.result?.title || '')
+      fd.append('file', x.file)
+      try { await api.hrUpload(`employees/${r.id}/documents`, fd); filed.push(x.id) } catch (er) { toast(`${x.file.name}: ${errText(er)}`, 'err') }
+    }
+    if (filed.length) {
+      setReads((p) => p.filter((y) => !filed.includes(y.id)))
+      toast(`✓ ${filed.length} document${filed.length === 1 ? '' : 's'} filed under Documents`)
+    }
+    fill(filed.length ? await api.hrGet(`employees/${r.id}`) : r)
+    if (!eid) setEid(r.id)
+    onSaved()
+    reloadOpts()
   }
-  const managers = o.employees.filter((x) => x.id !== eid).map((x) => ({ value: x.id, label: `${x.name} · ${x.designation || x.code}` }))
-  const desigs = o.designations.filter((d) => !f.department_id || !d.department_id || +d.department_id === +f.department_id)
+  const [reads, setReads] = useState([])          // papers dropped on the form, read and waiting to be filed
+  const applyRead = async (rows) => {
+    const patch = {}
+    let dep = null
+    let desig = null
+    rows.forEach((x) => { if (x.k === 'department') dep = x; else if (x.k === 'designation') desig = x; else patch[x.k] = x.v })
+    let depId = f.department_id
+    if (dep) depId = String(dep.read.result.department_id || (await addMaster('departments', {})(dep.v)) || depId || '')
+    let desigId = f.designation_id
+    if (desig) {
+      const known = desig.read.result.designation_id
+      if (known) {
+        desigId = String(known)
+        if (!dep && desig.read.result.department_id) depId = String(desig.read.result.department_id)
+      } else desigId = String((await addMaster('designations', { department_id: depId ? +depId : null })(desig.v)) || desigId || '')
+    }
+    setF((p) => ({ ...p, ...patch, department_id: depId, designation_id: desigId }))
+  }
+  const managers = o.employees.filter((x) => x.id !== eid).map((x) => ({ value: x.id, label: x.name, sub: x.designation || x.code }))
+  // Lists in use, plus whatever this person already has even if since switched off.
+  const live = (rows, cur) => rows.filter((r) => r.active !== false || +r.id === +cur)
+  const deps = live(o.departments, f.department_id).map((d) => ({ value: d.id, label: d.name, item: d }))
+  // Every designation, this department's first, each saying which department it
+  // belongs to — picking one fills the department in.
+  const desigs = live(o.designations, f.designation_id)
+    .map((d) => ({ value: d.id, label: d.name, sub: d.department || '', item: d }))
+    .sort((a, b) => (+(+b.item.department_id === +f.department_id) - +(+a.item.department_id === +f.department_id)) || a.label.localeCompare(b.label))
+  const shifts = live(o.shifts, f.shift_id).map((s) => ({ value: s.id, label: s.name, sub: `${s.start_time}–${s.end_time}`, item: s }))
+  const [master, setMaster] = useState(null)        // { kind, value, field } — a list entry being added or edited
+  const defs = masterDefs(o)
+  const editMaster = (kind, field) => (opt) => setMaster({ kind, field, value: { ...defs[kind].blank, ...opt.item } })
+  const addMaster = (kind, body) => async (name) => {
+    const r = await run(() => api.hrSend('POST', `masters/${kind}`, { ...body, name }), `✓ ${defs[kind].noun[0].toUpperCase() + defs[kind].noun.slice(1)} “${name}” added`)
+    if (!r) return null
+    await reloadOpts()
+    return r.id
+  }
+  const pickDep = (v) => setF((p) => {
+    const d = o.designations.find((x) => +x.id === +p.designation_id)
+    const fits = !d || !d.department_id || !v || +d.department_id === +v
+    return { ...p, department_id: v, designation_id: fits ? p.designation_id : '' }
+  })
+  const pickDesig = (v) => setF((p) => {
+    const d = o.designations.find((x) => +x.id === +v)
+    return { ...p, designation_id: v, department_id: d?.department_id ? String(d.department_id) : p.department_id, grade: p.grade || d?.grade || '' }
+  })
   const formTabs = ['personal', 'job', 'pay']
   const tabs = [['personal', 'Personal'], ['job', 'Job'], ['pay', 'Pay & statutory'],
     eid && ['contracts', 'Contracts', e?.contracts?.length], eid && ['documents', 'Documents', e?.documents?.length],
     eid && ['history', 'Role history'], eid && ['leave', 'Leave'], eid && ['payslips', 'Payslips'],
     eid && ['exit', e?.status === 'active' ? 'Exit' : 'Exit details']]
-  return (
+  return (<>
     <Modal wide title={eid ? `${e?.name || '…'} · ${e?.code || ''}` : 'New employee'} onClose={onClose}
       foot={formTabs.includes(tab) ? <>
         <div className="spacer" />
@@ -431,6 +629,7 @@ function EmployeeModal({ id, toast, onClose, onSaved }) {
       {eid && e && (
         <EmpBanner e={e} toast={toast} onChange={(x) => { fill(x); onSaved() }} />
       )}
+      {formTabs.includes(tab) && <DocReader f={f} o={o} reads={reads} setReads={setReads} onApply={applyRead} toast={toast} />}
       <Tabs tabs={tabs} value={tab} onChange={setTab} />
       {tab === 'personal' && (
         <div className="fin-form">
@@ -457,24 +656,30 @@ function EmployeeModal({ id, toast, onClose, onSaved }) {
         <div className="fin-form">
           <h5>Position</h5>
           <F label="Employee code" hint={eid ? '' : 'Left blank, the next number is given'}><input value={f.code || ''} onChange={set('code')} placeholder="Auto" /></F>
-          <F label="Department"><Sel value={f.department_id || ''} onChange={set('department_id')} placeholder="—" options={o.departments.map((d) => ({ value: d.id, label: d.name }))} /></F>
-          <F label="Designation"><Sel value={f.designation_id || ''} onChange={set('designation_id')} placeholder="—" options={desigs.map((d) => ({ value: d.id, label: d.name }))} /></F>
+          <F label="Department"><Combo value={f.department_id} onChange={pickDep} options={deps} noun="department"
+            onCreate={addMaster('departments', {})} onEdit={editMaster('departments', 'department_id')} /></F>
+          <F label="Designation" hint={f.designation_id ? '' : 'Picking one fills in its department'}><Combo value={f.designation_id} onChange={pickDesig}
+            options={desigs} noun="designation" onCreate={addMaster('designations', { department_id: f.department_id ? +f.department_id : null, grade: f.grade || null })}
+            onEdit={editMaster('designations', 'designation_id')} /></F>
           <F label="Grade"><input value={f.grade || ''} onChange={set('grade')} /></F>
-          <F label="Location"><Sel value={f.location || ''} onChange={set('location')} placeholder="—" options={o.locations} /></F>
-          <F label="Reports to"><Sel value={f.reporting_to_id || ''} onChange={set('reporting_to_id')} placeholder="Nobody" options={managers} /></F>
+          <F label="Location"><Combo value={f.location} onChange={set('location')} noun="location"
+            options={f.location && !o.locations.includes(f.location) ? [...o.locations, f.location] : o.locations} onCreate={async (x) => x} /></F>
+          <F label="Reports to"><Combo value={f.reporting_to_id} onChange={set('reporting_to_id')} options={managers} blankLabel="Nobody"
+            emptyNote="No other employees yet — add or import them first" /></F>
           <h5>Employment</h5>
           <F label="Type"><Sel value={f.employment_type} onChange={set('employment_type')} allowBlank={false} options={o.employment_types} /></F>
           <DateField label="Joined on" required value={f.joined_on || ''} onChange={set('joined_on')} />
           <F label="Probation (months)"><input type="number" min={0} value={f.probation_months ?? ''} onChange={set('probation_months')} /></F>
           <DateField label="Confirmed on" value={f.confirmed_on || ''} onChange={set('confirmed_on')} />
           <h5>Time</h5>
-          <F label="Shift"><Sel value={f.shift_id || ''} onChange={set('shift_id')} placeholder="—"
-            options={o.shifts.filter((s) => s.active !== false).map((s) => ({ value: s.id, label: `${s.name} · ${s.start_time}–${s.end_time}` }))} /></F>
+          <F label="Shift"><Combo value={f.shift_id} onChange={set('shift_id')} options={shifts} noun="shift"
+            onCreate={async (name) => { setMaster({ kind: 'shifts', field: 'shift_id', value: { ...SHIFT_BLANK, name } }); return null }}
+            onEdit={editMaster('shifts', 'shift_id')} /></F>
           <F label="Weekly off"><Sel value={f.weekly_off || ''} onChange={set('weekly_off')} placeholder="None (rostered)" options={o.weekdays} /></F>
           <F label="Store login" hint="Their check-ins at the till become attendance; their bills, incentive">
             {store?.rows?.length ? (
-              <Sel value={f.store_username || ''} onChange={set('store_username')} placeholder="Not linked"
-                options={store.rows.filter((r) => !r.employee_id || r.employee_id === eid).map((r) => ({ value: r.username, label: `${r.name} · ${r.username}` }))} />
+              <Combo value={f.store_username} onChange={set('store_username')} blankLabel="Not linked"
+                options={store.rows.filter((r) => !r.employee_id || r.employee_id === eid).map((r) => ({ value: r.username, label: r.name, sub: r.username }))} />
             ) : <input value={f.store_username || ''} onChange={set('store_username')} placeholder="Their username at the till" />}</F>
           {eid && <DateField label="Changes take effect" value={f.effective_on || ''} onChange={set('effective_on')}
             title="The date a transfer, promotion or raise is written on their role history (today if blank)" />}
@@ -518,7 +723,16 @@ function EmployeeModal({ id, toast, onClose, onSaved }) {
       {tab === 'payslips' && e && <EmpSlips e={e} toast={toast} />}
       {tab === 'exit' && e && <EmpExit e={e} toast={toast} onChange={() => { reload(); onSaved(); reloadOpts() }} />}
     </Modal>
-  )
+    {master && <MasterEditor kind={master.kind} noun={defs[master.kind].noun} fields={defs[master.kind].fields} value={master.value}
+      toast={toast} onClose={() => setMaster(null)}
+      onSaved={async (r) => {
+        const { field, kind } = master
+        setMaster(null)
+        await reloadOpts()
+        if (kind === 'designations' && r.department_id && +f.designation_id === +r.id) setF((p) => ({ ...p, department_id: String(r.department_id) }))
+        if (!master.value.id) setF((p) => ({ ...p, [field]: String(r.id) }))
+      }} />}
+  </>)
 }
 
 function EmpContracts({ e, toast, onChange }) {
@@ -635,6 +849,130 @@ function DocTypeSelect({ value, onChange, groups }) {
   )
 }
 
+// ---------------------------------------------------------------- filling the form from papers
+const READ_LABELS = { name: 'Full name', father_name: "Father's / spouse's name", gender: 'Gender', dob: 'Date of birth',
+  blood_group: 'Blood group', phone: 'Mobile', email: 'Email', address: 'Current address', permanent_address: 'Permanent address',
+  aadhaar: 'Aadhaar', pan: 'PAN', uan: 'UAN', bank_name: 'Bank', bank_account: 'Account number', ifsc: 'IFSC',
+  department: 'Department', designation: 'Designation', joined_on: 'Joined on', location: 'Location' }
+const READ_DATES = ['dob', 'joined_on']
+let readSeq = 0
+
+// What the papers say against what the form holds, one row per field read. A row
+// is ticked when the form is empty there and no earlier paper already offered it;
+// a row that disagrees with the form is shown but left for the person to tick.
+function readRows(reads, f, o) {
+  const seen = new Set()
+  const rows = []
+  reads.forEach((r) => {
+    if (r.status !== 'done') return
+    Object.keys(READ_LABELS).forEach((k) => {
+      const v = r.result.fields[k]
+      if (!v) return
+      const now = k === 'department' ? o.departments.find((d) => +d.id === +f.department_id)?.name || ''
+        : k === 'designation' ? o.designations.find((d) => +d.id === +f.designation_id)?.name || ''
+          : String(f[k] ?? '')
+      const same = now.trim().toLowerCase() === String(v).trim().toLowerCase()
+      rows.push({ key: `${r.id}:${k}`, k, v, now, same, from: r.doc_type, read: r, tick: !same && !now && !seen.has(k) })
+      seen.add(k)
+    })
+  })
+  return rows
+}
+
+function DocReader({ f, o, reads, setReads, onApply, toast }) {
+  const pick = useRef(null)
+  const [ticks, setTicks] = useState({})
+  const [drag, setDrag] = useState(false)
+  const rows = readRows(reads, f, o)
+  const ticked = (r) => (ticks[r.key] ?? r.tick) && !r.same
+  const read = (files) => {
+    ;[...files].forEach((file) => {
+      const id = ++readSeq
+      const img = /^image\//.test(file.type)
+      setReads((p) => [...p, { id, file, thumb: img ? URL.createObjectURL(file) : null, status: 'reading', attach: true }])
+      const fd = new FormData()
+      fd.append('file', file)
+      api.hrUpload('read-document', fd)
+        .then((res) => setReads((p) => p.map((x) => (x.id === id ? { ...x, status: res.doc_type ? 'done' : 'unread', result: res,
+          doc_type: res.doc_type || 'Other', number: res.number || '', attach: true } : x))))
+        .catch((er) => setReads((p) => p.map((x) => (x.id === id ? { ...x, status: 'error', error: errText(er), doc_type: 'Other', number: '' } : x))))
+    })
+  }
+  const drop = (ev) => { ev.preventDefault(); setDrag(false); if (ev.dataTransfer.files?.length) read(ev.dataTransfer.files) }
+  const upd = (id, patch) => setReads((p) => p.map((x) => (x.id === id ? { ...x, ...patch } : x)))
+  const remove = (r) => { if (r.thumb) URL.revokeObjectURL(r.thumb); setReads((p) => p.filter((x) => x.id !== r.id)) }
+  const take = rows.filter(ticked)
+  const apply = async () => {
+    await onApply(take)
+    setTicks({})
+    toast(`✓ ${take.length} field${take.length === 1 ? '' : 's'} filled — check them and save`)
+  }
+  const reading = reads.some((r) => r.status === 'reading')
+  const notes = [...new Set(reads.map((r) => r.result?.note).filter(Boolean))]
+  return (
+    <div className={'hr-reader' + (drag ? ' drag' : '')} onDragOver={(ev) => { ev.preventDefault(); setDrag(true) }}
+      onDragLeave={() => setDrag(false)} onDrop={drop}>
+      <div className="hr-readerhead">
+        <span className="hr-readericon"><Icon name="sparkle" size={16} /></span>
+        <div><b>Fill from documents</b>
+          <div className="small muted">Aadhaar, PAN, voter ID, licence, passport, cheque or passbook, resume, offer letter — drop them here.
+            What is read is shown below to check before it goes into the form, and the papers are filed under Documents when you save.</div></div>
+        <button type="button" className="btn sm" onClick={() => pick.current?.click()}><Icon name="upload" size={13} /> Upload</button>
+        <input ref={pick} type="file" multiple hidden accept=".pdf,.jpg,.jpeg,.png,.webp"
+          onChange={(ev) => { read(ev.target.files); ev.target.value = '' }} />
+      </div>
+      {reads.length > 0 && (
+        <div className="hr-readdocs">
+          {reads.map((r) => (
+            <div key={r.id} className={'hr-readdoc ' + r.status}>
+              {r.thumb ? <img src={r.thumb} alt="" /> : <span className="hr-docicon"><Icon name="filetext" size={16} /></span>}
+              <div className="hr-readdocbody">
+                <div className="hr-readdoctop">
+                  <span className="hr-readdocname" title={r.file.name}>{r.file.name}</span>
+                  <span className="small muted">{r.status === 'reading' ? 'Reading…' : r.status === 'done' ? `${Object.keys(r.result.fields).length} read` : r.status === 'unread' ? 'not read' : ''}</span>
+                  <button type="button" className="hr-readx" title="Leave this one out" aria-label={`Remove ${r.file.name}`} onClick={() => remove(r)}><Icon name="x" size={13} /></button>
+                </div>
+                {r.status === 'error' ? <div className="small hr-bad">{r.error}</div>
+                  : r.status !== 'reading' && <div className="hr-readdocmeta">
+                    <DocTypeSelect value={r.doc_type} onChange={(v) => upd(r.id, { doc_type: v })} groups={o.doc_groups.length ? o.doc_groups : [['Documents', o.doc_types]]} />
+                    <label className="hr-fileit" title="File this paper under the employee's Documents on saving">
+                      <input type="checkbox" checked={r.attach} onChange={(ev) => upd(r.id, { attach: ev.target.checked })} /> File it</label>
+                  </div>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {notes.map((n) => <div key={n} className="small muted hr-readnote">{n}</div>)}
+      {rows.length > 0 && (
+        <>
+          <div className="tablewrap"><table className="items fin-table hr-readtable">
+            <thead><tr><th style={{ width: 30 }} /><th>Field</th><th>Read from the document</th><th>In the form now</th></tr></thead>
+            <tbody>{rows.map((r) => (
+              <tr key={r.key} className={r.same ? 'same' : !r.now ? '' : 'differs'}>
+                <td>{r.same ? <span className="hr-good" aria-label="Same as the form">✓</span>
+                  : <input type="checkbox" checked={!!ticked(r)} aria-label={`Use ${READ_LABELS[r.k]}`}
+                    onChange={(ev) => setTicks({ ...ticks, [r.key]: ev.target.checked })} />}</td>
+                <td><b>{READ_LABELS[r.k]}</b><div className="small muted">{r.from}</div></td>
+                <td className={r.k === 'aadhaar' || r.k === 'pan' || r.k === 'ifsc' || r.k === 'bank_account' ? 'mono' : ''}>
+                  {READ_DATES.includes(r.k) ? fmtDate(r.v) : r.v}
+                  {r.k === 'department' && !r.read.result.department_id && <Badge tone="pending">new</Badge>}
+                  {r.k === 'designation' && !r.read.result.designation_id && <Badge tone="pending">new</Badge>}</td>
+                <td className="muted">{r.same ? 'Same' : r.now ? (READ_DATES.includes(r.k) ? fmtDate(r.now) : r.now) : '—'}</td>
+              </tr>
+            ))}</tbody>
+          </table></div>
+          <div className="hr-readfoot">
+            <span className="small muted">Ticked fields replace what the form holds. New departments and designations are added to the lists.</span>
+            <button type="button" className="btn primary" disabled={!take.length || reading} onClick={apply}>
+              <Icon name="clipcheck" size={14} /> Fill {take.length || ''} field{take.length === 1 ? '' : 's'}</button>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 function EmpDocuments({ e, toast, onChange }) {
   const [o] = useHrOptions()
   const [f, setF] = useState({ doc_type: 'Offer letter', number: '', issued_on: '', expires_on: '', title: '' })
@@ -676,7 +1014,7 @@ function EmpDocuments({ e, toast, onChange }) {
         {groups.map(([g]) => {
           const docs = inGroup(g)
           return (
-            <section key={g} className={'hr-folder' + (docs.length ? '' : ' empty')}>
+            <section key={g} className={'hr-folder' + (docs.length ? '' : ' none')}>
               <div className="hr-folderhead"><Icon name="book" size={14} /><b>{g}</b><span className="hr-count">{docs.length}</span></div>
               {docs.length === 0 ? <div className="small muted hr-foldernone">Nothing filed yet</div> : docs.map((d) => (
                 <div key={d.id} className="hr-doc">
@@ -1142,12 +1480,7 @@ function Shifts({ toast }) {
         cols={[['name', 'Shift'], ['code', 'Code'], [(r) => `${r.start_time}–${r.end_time}`, 'Timing'], [(r) => `${r.break_minutes} min`, 'Break'],
           [(r) => `${r.grace_minutes} min`, 'Grace'], [(r) => `${r.full_day_hours} h / ${r.half_day_hours} h`, 'Full / half day'],
           [(r) => `after ${r.ot_after_minutes} min`, 'Overtime'], ['employees', 'People']]}
-        fields={[['name', 'Name', 'text', true], ['code', 'Code'], ['start_time', 'Starts', 'time', true], ['end_time', 'Ends', 'time', true],
-          ['break_minutes', 'Break (min)', 'number'], ['grace_minutes', 'Grace (min)', 'number'], ['full_day_hours', 'Full day (hours)', 'number'],
-          ['half_day_hours', 'Half day (hours)', 'number'], ['ot_after_minutes', 'Overtime after (min)', 'number'], ['color', 'Colour', 'color'],
-          ['active', 'In use', 'check']]}
-        blank={{ name: '', code: '', start_time: '10:00', end_time: '21:00', break_minutes: 60, grace_minutes: 10, full_day_hours: 9,
-          half_day_hours: 4.5, ot_after_minutes: 30, color: '#2F8F68', active: true }} />
+        fields={masterDefs(o).shifts.fields} blank={SHIFT_BLANK} />
         : !d ? <Empty>Reading the roster…</Empty> : d.rows.length === 0 ? <Empty>Nobody to roster.</Empty> : (
           <div className="tablewrap fin-scroll"><table className="items hr-roster">
             <thead><tr><th style={{ width: 30 }}><input type="checkbox" checked={pick.length === d.rows.length}
@@ -1179,15 +1512,9 @@ function Shifts({ toast }) {
 function MasterTable({ kind, cols, fields, blank, toast, onChange, noun }) {
   const [rows, setRows] = useState(null)
   const [edit, setEdit] = useState(null)
-  const [busy, run] = useRun(toast)
+  const [, run] = useRun(toast)
   const load = useCallback(() => api.hrGet(`masters/${kind}`).then(setRows).catch((e) => toast(errText(e), 'err')), [kind, toast])
   useEffect(() => { load() }, [load])
-  const save = async () => {
-    const body = { ...edit }
-    fields.forEach(([k, , t]) => { if (t === 'number') body[k] = body[k] === '' || body[k] == null ? null : +body[k] })
-    const r = await run(() => (edit.id ? api.hrSend('PUT', `masters/${kind}/${edit.id}`, body) : api.hrSend('POST', `masters/${kind}`, body)), `✓ ${noun} saved`)
-    if (r) { setEdit(null); load(); onChange && onChange() }
-  }
   const del = async (x) => {
     if (!window.confirm(`Delete ${x.name}?`)) return
     const r = await run(() => api.hrSend('DELETE', `masters/${kind}/${x.id}`), (y) => (y.deactivated ? `${x.name} is in use — switched off instead` : `${x.name} deleted`))
@@ -1209,21 +1536,8 @@ function MasterTable({ kind, cols, fields, blank, toast, onChange, noun }) {
           ))}</tbody>
         </table></div>
       )}
-      {edit && (
-        <Modal title={edit.id ? `Edit ${noun} — ${edit.name}` : `New ${noun}`} onClose={() => setEdit(null)}
-          foot={<><div className="spacer" /><button className="btn" onClick={() => setEdit(null)}>Cancel</button>
-            <button className="btn primary" disabled={busy} onClick={save}>Save</button></>}>
-          <div className="fin-form">
-            {fields.map(([k, l, t = 'text', req, opts]) => (
-              t === 'check' ? <F key={k} label={l}><label className="fin-check"><input type="checkbox" checked={edit[k] !== false && !!edit[k]}
-                onChange={(e) => setEdit({ ...edit, [k]: e.target.checked })} /> Yes</label></F>
-                : t === 'date' ? <DateField key={k} label={l} required={req} value={edit[k] || ''} onChange={(v) => setEdit({ ...edit, [k]: v })} />
-                  : t === 'select' ? <F key={k} label={l} req={req}><Sel value={edit[k] ?? ''} onChange={(v) => setEdit({ ...edit, [k]: v })} placeholder="—" options={opts} /></F>
-                    : <F key={k} label={l} req={req}><input type={t} value={edit[k] ?? ''} onChange={(e) => setEdit({ ...edit, [k]: e.target.value })} /></F>
-            ))}
-          </div>
-        </Modal>
-      )}
+      {edit && <MasterEditor kind={kind} noun={noun} fields={fields} value={edit} toast={toast} onClose={() => setEdit(null)}
+        onSaved={() => { setEdit(null); load(); onChange && onChange() }} />}
     </>
   )
 }
@@ -2245,13 +2559,10 @@ function HrSettings({ toast }) {
         ['payroll', 'Payroll & statutory'], ['devices', 'Attendance devices']]} value={tab} onChange={setTab} />
       {tab === 'departments' && <MasterTable kind="departments" noun="department" toast={toast} onChange={reloadOpts}
         cols={[['name', 'Department'], ['code', 'Code'], ['head', 'Head'], ['employees', 'People'], ['active', 'In use']]}
-        fields={[['name', 'Name', 'text', true], ['code', 'Code'], ['head_id', 'Head', 'select', false, o.employees.map((e) => ({ value: e.id, label: e.name }))], ['active', 'In use', 'check']]}
-        blank={{ name: '', code: '', head_id: '', active: true }} />}
+        fields={masterDefs(o).departments.fields} blank={masterDefs(o).departments.blank} />}
       {tab === 'designations' && <MasterTable kind="designations" noun="designation" toast={toast} onChange={reloadOpts}
         cols={[['name', 'Designation'], ['department', 'Department'], ['grade', 'Grade'], ['level', 'Level'], ['employees', 'People'], ['active', 'In use']]}
-        fields={[['name', 'Name', 'text', true], ['department_id', 'Department', 'select', false, o.departments.map((d) => ({ value: d.id, label: d.name }))],
-          ['grade', 'Grade'], ['level', 'Level in the chart (1 = top)', 'number'], ['active', 'In use', 'check']]}
-        blank={{ name: '', department_id: '', grade: '', level: 4, active: true }} />}
+        fields={masterDefs(o).designations.fields} blank={masterDefs(o).designations.blank} />}
       {tab === 'holidays' && <MasterTable kind="holidays" noun="holiday" toast={toast} onChange={reloadOpts}
         cols={[[(r) => fmtDate(r.date), 'Date'], ['name', 'Holiday'], [(r) => (r.optional ? 'Restricted' : 'Closed'), 'Kind']]}
         fields={[['date', 'Date', 'date', true], ['name', 'Name', 'text', true], ['optional', 'Restricted (optional) — the shop stays open', 'check']]}
