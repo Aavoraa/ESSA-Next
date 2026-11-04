@@ -15129,7 +15129,7 @@ function AskAnything({ go, big, placeholder, seed }) {
         <span className="ico" aria-hidden="true">✨</span>
         <span className="askfield">
           <input value={q} onChange={(e) => setQ(e.target.value)}
-            placeholder={placeholder || 'Ask anything — press 🎤 and say “today’s total invoices” — or paste a GRN, bill or QR code'}
+            placeholder={placeholder || 'Ask anything — press 🎤 and say “bills billed by Priya today” — or type a name, a GRN, bill or QR code'}
             title="Speak it or type it, in English or Tamil. A code pasted here is tracked end to end."
             onKeyDown={(e) => { if (e.key === 'Enter' && q.trim()) run() }} />
           {q && <button className="askclear" title="Clear" onClick={() => { setQ(''); setAns(null) }}>×</button>}

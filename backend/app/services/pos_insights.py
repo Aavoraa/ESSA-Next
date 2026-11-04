@@ -14,9 +14,11 @@ services/business_day; the till stores `invoice_date` as naive UTC, and a string
 'YYYY-MM-DD HH:MM:SS' compares correctly against it on SQLite and Postgres both.
 
 WHERE: every sales function takes `at`, a dict narrowing the bills —
-{"location_ids": [...], "floor_ids": [...], "counter_ids": [...]}. A key that is
-absent or None does not narrow; an EMPTY list is a real answer of nothing (a
-warehouse whose stores the till does not recognise sold nothing we can show).
+{"location_ids": [...], "floor_ids": [...], "counter_ids": [...]}, and for "billed
+by Priya" or "bills of R Kumar" also "cashier_ids", "staff_ids" (the salesperson),
+"person_ids" (either of the two) and "customer_ids". A key that is absent or None
+does not narrow; an EMPTY list is a real answer of nothing (a warehouse whose
+stores the till does not recognise sold nothing we can show).
 """
 import re
 
@@ -82,7 +84,8 @@ def _where(at, alias="i"):
     at = at or {}
     sql, params = "", []
     for key, col in (("location_ids", "location_id"), ("floor_ids", "floor_id"),
-                     ("counter_ids", "counter_id")):
+                     ("counter_ids", "counter_id"), ("cashier_ids", "cashier_id"),
+                     ("staff_ids", "staff_id"), ("customer_ids", "customer_id")):
         ids = at.get(key)
         if ids is None:
             continue
@@ -90,6 +93,13 @@ def _where(at, alias="i"):
             return " AND 1=0", []
         sql += f" AND {alias}.{col} IN (" + ",".join("?" for _ in ids) + ")"
         params += [int(x) for x in ids]
+    ids = at.get("person_ids")
+    if ids is not None:
+        if not ids:
+            return " AND 1=0", []
+        marks = ",".join("?" for _ in ids)
+        sql += f" AND ({alias}.cashier_id IN ({marks}) OR {alias}.staff_id IN ({marks}))"
+        params += [int(x) for x in ids] * 2
     return sql, params
 
 
@@ -507,6 +517,22 @@ def people():
                 "SELECT id, username, full_name, role FROM " + _t("users"), [])]
 
 
+def people_named(text):
+    """The till's staff a name means — "priya" finds Priya Sharma; a full name
+    finds that person only. Every word must start a word of the name or be the
+    username, so "ravi" is not "Aravind"."""
+    want = [w for w in re.findall(r"[a-z0-9]+", (text or "").lower()) if w]
+    if not want:
+        return []
+    out = []
+    for p in people():
+        words = re.findall(r"[a-z0-9]+", f"{p['name']} {p['username']}".lower())
+        if all(any(n.startswith(w) for n in words) for w in want):
+            out.append(p)
+    exact = [p for p in out if _norm(p["name"]) == " ".join(want) or p["username"].lower() == " ".join(want)]
+    return exact or out
+
+
 def _norm(name):
     return " ".join(str(name or "").split()).lower()
 
@@ -565,6 +591,38 @@ def recent_bills(limit=10, at=None, since=None):
     return [{"bill_no": r[0], "at": str(r[1] or ""), "total": round(_num(r[2]), 2),
              "status": r[3] or "paid", "counter": r[4] or None, "branch": r[5] or None,
              "cashier": r[6] or None, "floor": r[7] or None} for r in rows]
+
+
+def bills(start, end, at=None, limit=300):
+    """The bills themselves, newest first: who billed, who sold, to whom, how paid.
+
+    Cancelled bills are listed too — marked, and left out of `totals` — because
+    "Priya's bills today" that quietly drops the one she cancelled is the wrong
+    answer to the person asking."""
+    if not available():
+        return []
+    w_sql, w_params = _where(at)
+    rows = pos_sales._rows(
+        "SELECT i.invoice_number, i.invoice_date, i.total, COALESCE(i.discount,0), "
+        "       COALESCE(i.payment_status,'paid'), COALESCE(i.payment_method,''), "
+        "       COALESCE(l.name,''), COALESCE(f.name,''), COALESCE(c.name,''), "
+        "       COALESCE(u.full_name,u.username,''), COALESCE(s.full_name,s.username,''), "
+        "       COALESCE(cu.name,''), COALESCE(cu.phone,'') "
+        "FROM " + _t("invoices") + " i "
+        "LEFT JOIN " + _t("locations") + " l ON l.id = i.location_id "
+        "LEFT JOIN " + _t("floors") + " f ON f.id = i.floor_id "
+        "LEFT JOIN " + _t("counters") + " c ON c.id = i.counter_id "
+        "LEFT JOIN " + _t("users") + " u ON u.id = i.cashier_id "
+        "LEFT JOIN " + _t("users") + " s ON s.id = i.staff_id "
+        "LEFT JOIN " + _t("customers") + " cu ON cu.id = i.customer_id "
+        "WHERE i.invoice_date >= ? AND i.invoice_date < ?" + w_sql +
+        " ORDER BY i.invoice_date DESC, i.id DESC LIMIT ?",
+        win_params(start, end) + w_params + [int(limit)])
+    return [{"bill_no": r[0], "at": r[1], "total": round(_num(r[2]), 2),
+             "discount": round(_num(r[3]), 2), "status": r[4] or "paid",
+             "method": r[5] or "—", "branch": r[6] or "—", "floor": r[7] or "—",
+             "counter": r[8] or "—", "cashier": r[9] or "—", "staff": r[10] or "—",
+             "customer": r[11] or "Walk-in", "phone": r[12] or ""} for r in rows]
 
 
 def find_bill(number):

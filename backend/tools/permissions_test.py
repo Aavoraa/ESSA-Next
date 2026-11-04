@@ -251,6 +251,39 @@ client.put("/api/users/%d/permissions" % adm_row["id"], headers=head_su, json={}
 eq("back to Admin, the header goes on the very next request",
    shop_sees(token=a_tok["token"]), None)
 
+head("…and who is signed in, so the frame needs no second login")
+from urllib.parse import unquote as _unquote                          # noqa: E402
+from backend.app import pos_mount as _pm                              # noqa: E402
+_KEY_H, _USER_H = _pm.SSO_KEY_HEADER.encode(), _pm.SSO_USER_HEADER.encode()
+
+
+def shop_user(token=None, extra=()):
+    """(username, role) the mount names to the shop — read the way the shop's
+    app/sso does: only beside the mount's own key — or None."""
+    h = [(b"host", b"essa")] + list(extra)
+    if token:
+        h.append((b"cookie", ("essa_token=%s" % token).encode()))
+    out = _with_store_access({"type": "http", "method": "GET", "path": "/pos/customers/",
+                              "headers": h, "query_string": b""})
+    got = [(k, v) for k, v in out["headers"] if k.lower() in (_KEY_H, _USER_H)]
+    sent = dict(got)
+    if len(got) > 2 or sent.get(_KEY_H) != _pm.SSO_KEY.encode() or _USER_H not in sent:
+        return None
+    parts = [_unquote(p) for p in sent[_USER_H].decode().split("|")]
+    return parts[0], parts[1]
+
+
+eq("the super admin is handed over by name", shop_user(token=su["token"]), ("superadmin", "superadmin"))
+eq("a Store user is handed over as a User", shop_user(token=u_tok["token"]), ("user", "user"))
+eq("no Essa session hands over nobody", shop_user(), None)
+forged = [(_USER_H, b"superadmin|superadmin|Super%20Admin"), (_KEY_H, b"a-guess")]
+out = _with_store_access({"type": "http", "method": "GET", "path": "/pos/customers/",
+                          "headers": [(b"host", b"essa")] + forged, "query_string": b""})
+eq("a name and key a client made up are stripped, with no session",
+   [k for k, _v in out["headers"] if k.lower() in (_KEY_H, _USER_H)], [])
+eq("…and replaced by the real ones, with one", shop_user(token=u_tok["token"], extra=forged),
+   ("user", "user"))
+
 head("what a Store user may open in the shop")
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))), "Textile Retail Shop"))
