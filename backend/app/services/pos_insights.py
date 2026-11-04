@@ -480,6 +480,75 @@ def stock(floor_ids=None, item=None):
             "rows": out}
 
 
+_PRODUCT_COLS = ("p.name", "COALESCE(cat.name,'')", "COALESCE(p.sku,'')", "COALESCE(p.barcode,'')",
+                 "COALESCE(p.design_no,'')", "COALESCE(p.brand,'')", "COALESCE(p.product_type,'')",
+                 "COALESCE(p.color,'')", "COALESCE(p.fabric,'')")
+
+
+def _product_rows(where, params, limit):
+    rows = pos_sales._rows(
+        "SELECT p.id, p.sku, p.name, COALESCE(cat.name,''), COALESCE(p.stock_qty,0), COALESCE(p.selling_price,0), "
+        "       COALESCE(p.mrp,0), COALESCE(p.cost_price,0), COALESCE(f.name,''), COALESCE(p.supplier,''), "
+        "       COALESCE(p.brand,''), p.purchase_date, COALESCE(p.reorder_level,0), p.active, p.barcode, p.warehouse_id "
+        "FROM " + _t("products") + " p "
+        "LEFT JOIN " + _t("categories") + " cat ON cat.id = p.category_id "
+        "LEFT JOIN " + _t("floors") + " f ON f.id = p.floor_id "
+        "WHERE 1=1" + where + " ORDER BY p.name LIMIT ?", params + [int(limit)])
+    return [{"id": r[0], "sku": r[1], "name": r[2], "category": r[3], "qty": _num(r[4]), "price": _num(r[5]),
+             "mrp": _num(r[6]), "cost": _num(r[7]), "floor": r[8] or None, "supplier": r[9] or None,
+             "brand": r[10] or None, "purchased": str(r[11])[:10] if r[11] else None,
+             "reorder": _num(r[12]), "active": r[13] in (None, 1, True), "barcode": r[14],
+             "warehouse_product_id": r[15]} for r in rows]
+
+
+def products_named(text, limit=200):
+    """The store's products somebody means by `text`, in stock or not — every
+    word must be in the name, category, SKU, barcode, design number, brand,
+    type, colour or fabric. A whole SKU or barcode finds that one product."""
+    if not available():
+        return []
+    code = (text or "").strip()
+    if code and " " not in code:
+        one = _product_rows(" AND (LOWER(COALESCE(p.sku,'')) = ? OR LOWER(COALESCE(p.barcode,'')) = ?)",
+                            [code.lower(), code.lower()], 5)
+        if one:
+            return one
+    words = words_of(text)
+    if not words:
+        return []
+    sql, params = "", []
+    for w in words:
+        like = f"%{_stem(w)}%"
+        sql += " AND (" + " OR ".join(f"LOWER({c}) LIKE ?" for c in _PRODUCT_COLS) + ")"
+        params += [like] * len(_PRODUCT_COLS)
+    return _product_rows(sql, params, limit)
+
+
+def products_from(supplier_text, limit=500):
+    """Store products bought from a supplier, by the name written on them."""
+    if not available():
+        return []
+    words = words_of(supplier_text)
+    if not words:
+        return []
+    sql = "".join(" AND LOWER(COALESCE(p.supplier,'')) LIKE ?" for _ in words)
+    return _product_rows(sql, [f"%{w}%" for w in words], limit)
+
+
+def sold_by_product(start, end, ids, at=None):
+    """{store product id: (bills, units, amount)} over [start, end)."""
+    if not available() or not ids:
+        return {}
+    w_sql, w_params = _where(at)
+    marks = ",".join("?" for _ in ids)
+    rows = pos_sales._rows(
+        "SELECT ii.product_id, COUNT(DISTINCT i.id), SUM(ii.quantity), SUM(ii.line_total + COALESCE(ii.tax_amount,0)) "
+        "FROM " + _t("invoice_items") + " ii JOIN " + _t("invoices") + " i ON i.id = ii.invoice_id "
+        "WHERE i.invoice_date >= ? AND i.invoice_date < ?" + LIVE + w_sql + f" AND ii.product_id IN ({marks})"
+        " GROUP BY ii.product_id", win_params(start, end) + w_params + [int(x) for x in ids])
+    return {r[0]: (int(r[1] or 0), round(_num(r[2]), 3), round(_num(r[3]), 2)) for r in rows}
+
+
 def store_stock_of(warehouse_product_id):
     """How many of one warehouse item the stores still hold."""
     rows = pos_sales._rows(

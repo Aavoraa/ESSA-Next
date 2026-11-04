@@ -123,7 +123,7 @@ shirt = SProduct(sku="ESSA-00001", name="LADIES SHIRT BLUE", category_id=shirts.
                  reorder_level=5, floor_id=ground.id)
 frock = SProduct(sku="ESSA-00002", name="KIDS FROCK", category_id=frocks.id,
                  cost_price=300.0, selling_price=500.0, gst_rate=5.0, stock_qty=20,
-                 reorder_level=5, floor_id=first.id)
+                 reorder_level=5, floor_id=first.id, supplier="Sri Lakshmi Textiles", barcode="8901234500027")
 shop_db.session.add_all([till1, till2, shirt, frock])
 shop_db.session.flush()
 
@@ -623,6 +623,19 @@ eq("a store's name is its sales", a["intent"], "sales")
 has("there", a["title"], "at TAQUA TIRUPUR")
 a = ask("kids frock")
 eq("a product's name is its stock", a["intent"], "stock")
+eq("…one product, though the store and the warehouse both carry it", a["title"], "KIDS FROCK")
+has("…where it is and what it costs", a["line"], "KIDS FROCK (ESSA-00002): 20 in the stores on First Floor")
+has("…and what the warehouse holds", a["line"], "in the warehouses")
+eq("…its supplier among the facts", {f["label"]: f["value"] for f in a["facts"]}.get("Supplier"), "Sri Lakshmi Textiles")
+a = ask("frock")
+eq("one word of a product's name finds it", a["title"], "KIDS FROCK")
+a = ask("8901234500027")
+eq("a store barcode the warehouse has never seen is the store's product", (a["intent"], a["title"]), ("stock", "KIDS FROCK"))
+a = ask("Sri Lakshmi")
+eq("a supplier known only from the store's products", (a["intent"], a["title"]), ("stock", "Sri Lakshmi Textiles"))
+has("…what is on the shelves from them", a["line"], "1 product in the stores, 20 pieces")
+a = ask("Sri Lakshmi Textiles")
+eq("…and by the whole name", a["title"], "Sri Lakshmi Textiles")
 a = ask("Kumar")
 eq("a user here by that name — answered by somebody", a["ok"], True)
 

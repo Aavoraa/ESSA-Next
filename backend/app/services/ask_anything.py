@@ -39,6 +39,8 @@ import re
 
 from datetime import timedelta
 
+from sqlalchemy import func
+
 from .. import models, runtime
 from . import (audit as audit_svc, business_day, command_center as cc, crm_insights as crm, hr as hr_svc,
                nlq, pos_insights, stock_locations as stock_loc, trace as trace_svc)
@@ -1302,6 +1304,125 @@ def a_supplier(db, sup, per):
                 "Supplier payments are company-wide.", {"tab": "payments"})
 
 
+def _warehouse_products(db, name, limit=200):
+    """Warehouse items `name` means: a whole SKU or barcode, else every word in
+    the description, category, SKU or brand."""
+    code = name.strip().lower()
+    if code and " " not in code:
+        one = db.query(models.Product).filter((func.lower(models.Product.sku) == code)
+                                              | (func.lower(models.Product.barcode) == code)).limit(5).all()
+        if one:
+            return one
+    words = pos_insights.words_of(name)
+    if not words:
+        return []
+    q = db.query(models.Product)
+    for w in words:
+        like = f"%{pos_insights._stem(w)}%"
+        q = q.filter((models.Product.description.ilike(like)) | (models.Product.category.ilike(like))
+                     | (models.Product.sku.ilike(like)) | (models.Product.brand.ilike(like)))
+    return q.order_by(models.Product.description).limit(limit).all()
+
+
+def _held(db, product_ids, wh_ids):
+    """{warehouse product id: units held} in the warehouses an account sees."""
+    if not product_ids:
+        return {}
+    q = (db.query(models.StockBalance.product_id, func.sum(models.StockBalance.qty))
+           .filter(models.StockBalance.product_id.in_(product_ids)))
+    if wh_ids:
+        q = q.filter(models.StockBalance.warehouse_id.in_(wh_ids))
+    return {pid: round(float(n or 0), 3) for pid, n in q.group_by(models.StockBalance.product_id).all()}
+
+
+def a_product(db, name, sc, per, store_rows=None, wh_rows=None):
+    """A product by what somebody called it: what it costs, where it is, what sold.
+    One match reads as that product; several as a list of them."""
+    store = store_rows if store_rows is not None else pos_insights.products_named(name)
+    whp = wh_rows if wh_rows is not None else _warehouse_products(db, name)
+    # the same item in the warehouse — linked by id, or sharing the SKU — is one row, not two
+    by_sku = {p.sku: p.id for p in whp if p.sku}
+    wid = {s["id"]: s["warehouse_product_id"] or by_sku.get(s["sku"]) for s in store}
+    linked = {w for w in wid.values() if w}
+    whp = [p for p in whp if p.id not in linked]
+    held = _held(db, list(linked | {p.id for p in whp}), sc["wh_ids"])
+    sold = pos_insights.sold_by_product(per["start"], per["end"], [s["id"] for s in store], sc["at"])
+    sold_label = _titled(per["label"], "Sold")
+    rows = []
+    for s in store:
+        b, units, amount = sold.get(s["id"], (0, 0, 0))
+        rows.append({"SKU": s["sku"], "Product": s["name"], "Category": s["category"], "Price": s["price"],
+                     "In stores": s["qty"], "Floor": s["floor"] or "—",
+                     "In warehouses": held.get(wid[s["id"]], 0), sold_label: units, "Sales": amount})
+    for p in whp:
+        rows.append({"SKU": p.sku, "Product": p.description, "Category": p.category or "", "Price": p.mrp or 0,
+                     "In stores": 0, "Floor": "—", "In warehouses": held.get(p.id, 0), sold_label: 0, "Sales": 0})
+    if not rows:
+        return None
+    cols = ["SKU", "Product", "Category", "Price", "In stores", "Floor", "In warehouses", sold_label, "Sales"]
+    in_st = round(sum(r["In stores"] for r in rows), 3)
+    in_wh = round(sum(r["In warehouses"] for r in rows), 3)
+    units = round(sum(r[sold_label] for r in rows), 3)
+    sales = round(sum(r["Sales"] for r in rows), 2)
+    when = _phrase(per["label"])
+    if len(rows) == 1:
+        r = rows[0]
+        s = store[0] if store else None
+        where = f" on {r['Floor']}" if r["Floor"] != "—" else ""
+        line = (f"{r['Product']} ({r['SKU']}): {fmt_qty(r['In stores'])} in the stores{where}"
+                + (f", {fmt_qty(r['In warehouses'])} in the warehouses" if r["In warehouses"] else "")
+                + (f"; {inr(r['Price'])} each" if r["Price"] else "")
+                + f"; {fmt_qty(units)} sold {when}" + (f" for {inr(sales)}." if sales else "."))
+        facts = [("SKU", r["SKU"]), ("Barcode", s and s["barcode"]), ("Category", r["Category"] or None),
+                 ("Selling price", inr(r["Price"]) if r["Price"] else None),
+                 ("MRP", inr(s["mrp"]) if s and s["mrp"] else None), ("Cost", inr(s["cost"]) if s and s["cost"] else None),
+                 ("In the stores", fmt_qty(r["In stores"])), ("Floor", s and s["floor"]),
+                 ("In the warehouses", fmt_qty(r["In warehouses"]) if r["In warehouses"] else None),
+                 (_titled(per["label"], "Sold"), f"{fmt_qty(units)} · {inr(sales)}"),
+                 ("Supplier", s and s["supplier"]), ("Brand", s and s["brand"]), ("Bought on", s and s["purchased"]),
+                 ("Reorder at", fmt_qty(s["reorder"]) if s and s["reorder"] else None)]
+        note = None
+        if s and r["In stores"] <= 0:
+            note = "Out of stock in the stores."
+        elif s and s["reorder"] and r["In stores"] <= s["reorder"]:
+            note = "At or below its reorder level."
+        return _out(r["Product"], fmt_qty(r["In stores"] + r["In warehouses"]), line, None, facts, cols, rows,
+                    note, {"tab": "inventory"})
+    title = f"Products — “{name}”"
+    line = (f"{plural(len(rows), 'product')} match “{name}”: {fmt_qty(in_st)} pieces in the stores"
+            + (f", {fmt_qty(in_wh)} in the warehouses" if in_wh else "")
+            + f"; {fmt_qty(units)} sold {when}" + (f" for {inr(sales)}." if sales else "."))
+    rows.sort(key=lambda x: (-x["Sales"], -(x["In stores"] + x["In warehouses"])))
+    return _out(title, str(len(rows)), line, None,
+                [("Products", str(len(rows))), ("In the stores", fmt_qty(in_st)), ("In the warehouses", fmt_qty(in_wh)),
+                 (_titled(per["label"], "Sold"), f"{fmt_qty(units)} · {inr(sales)}")],
+                cols, rows[:200], None, {"tab": "inventory"})
+
+
+def a_store_supplier(db, name, products, sc, per):
+    """A supplier known only from the store's products — what is on the shelves
+    from them, and how it sells."""
+    sold = pos_insights.sold_by_product(per["start"], per["end"], [p["id"] for p in products], sc["at"])
+    who = sorted({p["supplier"] for p in products})
+    units = round(sum(sold.get(p["id"], (0, 0, 0))[1] for p in products), 3)
+    sales = round(sum(sold.get(p["id"], (0, 0, 0))[2] for p in products), 2)
+    stock = round(sum(p["qty"] for p in products), 3)
+    value = round(sum(p["qty"] * p["cost"] for p in products), 2)
+    title = who[0] if len(who) == 1 else f"Supplier — “{name}”"
+    line = (f"{title}: {plural(len(products), 'product')} in the stores, {fmt_qty(stock)} pieces worth "
+            f"{inr_short(value)} at cost; {fmt_qty(units)} sold {_phrase(per['label'])} for {inr(sales)}.")
+    sold_label = _titled(per["label"], "Sold")
+    rows = [{"SKU": p["sku"], "Product": p["name"], "Supplier": p["supplier"], "Bought on": p["purchased"] or "—",
+             "In stores": p["qty"], sold_label: sold.get(p["id"], (0, 0, 0))[1], "Sales": sold.get(p["id"], (0, 0, 0))[2]}
+            for p in products]
+    rows.sort(key=lambda r: -r["Sales"])
+    return _out(title, inr_short(sales), line, None,
+                [("Products", str(len(products))), ("In stock", f"{fmt_qty(stock)} · {inr_short(value)}"),
+                 (sold_label, f"{fmt_qty(units)} · {inr(sales)}")],
+                ["SKU", "Product", "Supplier", "Bought on", "In stores", sold_label, "Sales"], rows[:200],
+                "Taken from the supplier written on each store product.", {"tab": "inventory"})
+
+
 def _starts_words(name, *fields):
     """Every word of `name` starts a word of the fields — "ams" is AMS Garments,
     "ram" is not Sriram."""
@@ -1335,7 +1456,8 @@ def _lookup(db, question, read, role, allowed, hr=False):
         for _, ws in _HINTS:
             name = re.sub(r"\b(?:" + "|".join(ws) + r")s?\b", " ", name)
         name = " ".join(_LOOKUP_FILLER.sub(" ", name).split()).strip(" .'-")
-    if len(name) < 3 or len(name.split()) > 4:
+    # a product's full name runs longer than a person's — "Kanchipuram Silk Saree - Red"
+    if len(name) < 3 or len(re.findall(r"[a-z0-9]+", name)) > 6:
         return None
     try:
         base = _scope(db, {}, allowed)
@@ -1379,11 +1501,19 @@ def _lookup(db, question, read, role, allowed, hr=False):
                       any(name in (_norm(u.full_name), _norm(u.username)) for u in users)))
     sups = [s for s in db.query(models.Supplier).all()
             if _starts_words(name, s.name) or any(_starts_words(name, a) for a in (s.aliases or []))]
+    per_m = _period(read, "month")
     if sups:
-        per_m = _period(read, "month")
         found.append(("supplier", "supplier: " + ", ".join(s.name for s in sups[:3]),
                       "pending_payments", lambda: a_supplier(db, sups[0], per_m),
                       any(_norm(x.name) == name for x in sups)))
+    else:
+        # a supplier the warehouse has never billed, known from the store's products
+        theirs = [p for p in (pos_insights.products_from(name) if pos_insights.available() else [])
+                  if _starts_words(name, p["supplier"])]
+        if theirs:
+            found.append(("supplier", "supplier: " + ", ".join(sorted({p["supplier"] for p in theirs})[:3]),
+                          "stock", lambda: a_store_supplier(db, name, theirs, base, per_m),
+                          any(_norm(p["supplier"]) == name for p in theirs)))
     for kind, rows in (("store", _store_rows(db)), ("warehouse", _warehouse_rows(db))):
         hit = next((r for r in rows if _starts_words(name, r["name"]) or _norm(r.get("code")) == name), None)
         if hit:
@@ -1395,16 +1525,14 @@ def _lookup(db, question, read, role, allowed, hr=False):
                 return a_sales(db, {}, sc, per)
             found.append(("place", f"{kind}: {hit['name']}", "sales", place_answer,
                           name in (_norm(hit["name"]), _norm(hit.get("code")))))
-    words = pos_insights.words_of(name)
-    if words:
-        q = db.query(models.Product.id)
-        for w in words:
-            like = f"%{pos_insights._stem(w)}%"
-            q = q.filter((models.Product.description.ilike(like)) | (models.Product.category.ilike(like))
-                         | (models.Product.sku.ilike(like)) | (models.Product.brand.ilike(like)))
-        if q.first():
-            found.append(("product", f"products: “{name}”", "stock",
-                          lambda: a_stock(db, {"item": name}, base, per), False))
+    in_store = pos_insights.products_named(name) if pos_insights.available() else []
+    in_wh = _warehouse_products(db, name)
+    if in_store or in_wh:
+        one = (in_store[0]["name"] if in_store else in_wh[0].description) if len(in_store) + len(in_wh) == 1 else None
+        whole = (any(name in (_norm(p["name"]), _norm(p["sku"]), _norm(p["barcode"])) for p in in_store)
+                 or any(name in (_norm(p.description), _norm(p.sku), _norm(p.barcode)) for p in in_wh))
+        found.append(("product", f"product: {one}" if one else f"products: “{name}”", "stock",
+                      lambda: a_product(db, name, base, per_m, in_store, in_wh), whole))
     if not found:
         return None
     # What the question said it was comes first, then a whole name over a part of one
@@ -1838,6 +1966,18 @@ def ask(db, question, role="admin", allowed=None, hr=False):
 
     if intent == "trace":
         out = trace_svc.find(db, read.get("code") or question, allowed=allowed)
+        if not out.get("ok", True) and not out.get("choices") and pos_insights.available():
+            # not a warehouse code — perhaps a store product's own SKU or barcode
+            code = (read.get("code") or question).strip()
+            hit = pos_insights.products_named(code) if " " not in code else []
+            if hit and any(code.lower() in (_norm(p["sku"]), _norm(p["barcode"])) for p in hit):
+                try:
+                    found = a_product(db, code, _scope(db, {}, allowed), _period(read, "month"), hit, [])
+                except Refused:
+                    found = None
+                if found:
+                    interp["intent"] = "stock"
+                    return {**found, "question": question, "intent": "stock", "interpretation": interp}
         out.setdefault("title", "Track")
         out.setdefault("headline", "")
         out.setdefault("facts", [])
