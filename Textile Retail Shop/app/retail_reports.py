@@ -33,7 +33,7 @@ from app import warehouse_items as wi
 from app.models import (Attendance, Category, Company, Counter, Coupon,
                         CouponRedemption, CreditNote, CreditNoteItem, Customer, CustomerAdvance,
                         CustomerFeedback, CustomerOrder, CustomerVisit, Delivery, DrawerSession,
-                        FeedbackAnswer, FeedbackQuestion, GiftVoucher, GiftVoucherBatch, Invoice,
+                        FeedbackAnswer, FeedbackQuestion, Floor, GiftVoucher, GiftVoucherBatch, Invoice,
                         InvoiceItem, InvoicePayment, Lead, Location, LocationStock,
                         LoyaltyTxn, Product, PromotionApplication, PromotionScheme,
                         SaleSession, ScheduledMessage, StaffAdvance, StockMovement,
@@ -1906,14 +1906,305 @@ def price_list_customers(ctx):
 
 
 # ===========================================================================
+#  COMPARISON REPORTS — floor against floor, product against product, sales
+#  against what came in, and one period against another.
+#
+#  Two floors are meant, and the reports say which they use. A SALE is placed
+#  on the floor its bill was raised on (the till's floor), the floor the
+#  Command Center and the bill series use. Stock — what came in, what is held —
+#  can only be placed on the floor its product is KEPT on (Floor Products), so
+#  the sales-against-purchase reports place the sale there too, to compare
+#  like with like.
+# ===========================================================================
+def _amount(item):
+    return (item.line_total or 0) + (item.tax_amount or 0)
+
+
+def _floor_label(f, multi=False):
+    """A floor's name — with its branch when the shop has floors in several."""
+    if f is None:
+        return "No floor"
+    return f.name + (f" · {f.location.name}" if multi and f.location else "")
+
+
+def _several_branches():
+    return db.session.query(func.count(func.distinct(Floor.location_id))).scalar() > 1
+
+
+def _floor_options():
+    """The floor picker: every floor, plus the products on none."""
+    multi = _several_branches()
+    return ([("", "Every floor"), ("none", "Not on a floor")]
+            + [(str(f.id), _floor_label(f, multi)) for f in Floor.query.filter(Floor.active.isnot(False))
+               .order_by(Floor.location_id, Floor.sort_order, Floor.name).all()])
+
+
+def _on_floor(ctx):
+    """A filter on Product for the report's Floor knob, or None for every floor."""
+    v = str(ctx.params.get("floor") or "").strip()
+    if v == "none":
+        return Product.floor_id.is_(None)
+    if v.isdigit():
+        return Product.floor_id == int(v)
+    return None
+
+
+def _per_product(ctx):
+    """{product id: [bills, qty, amount]} billed in the period and place."""
+    q = (ctx.lines().order_by(None)
+         .with_entities(InvoiceItem.product_id, func.count(func.distinct(Invoice.id)),
+                        func.sum(InvoiceItem.quantity),
+                        func.sum(InvoiceItem.line_total + func.coalesce(InvoiceItem.tax_amount, 0)))
+         .group_by(InvoiceItem.product_id))
+    return {pid: [int(b or 0), float(q_ or 0), float(a or 0)] for pid, b, q_, a in q.all()}
+
+
+def _products(ids, cond=None):
+    """{id: Product} with category and floor loaded, read in chunks."""
+    out, ids = {}, [i for i in ids if i]
+    for i in range(0, len(ids), 900):
+        q = Product.query.options(selectinload(Product.category), selectinload(Product.floor)) \
+            .filter(Product.id.in_(ids[i:i + 900]))
+        if cond is not None:
+            q = q.filter(cond)
+        out.update({p.id: p for p in q.all()})
+    return out
+
+
+def _received(ctx):
+    """{product id: qty} taken into the shop in the period — transfers counted
+    in from the warehouse plus opening entries, as Sales Vs Purchase Vs Stock
+    counts them (the shop buys nothing from suppliers itself)."""
+    got = {}
+    q = (db.session.query(TransferReceipt.product_id, func.sum(TransferReceipt.qty))
+         .filter(day_from(TransferReceipt.applied_at, ctx.start), day_to(TransferReceipt.applied_at, ctx.end)))
+    if ctx.location:
+        q = q.filter(TransferReceipt.location_id == ctx.location)
+    for pid, n in q.group_by(TransferReceipt.product_id).all():
+        got[pid] = got.get(pid, 0) + float(n or 0)
+    q = (db.session.query(StockMovement.product_id, func.sum(StockMovement.change))
+         .filter(StockMovement.change > 0, StockMovement.reason.in_(("opening", "purchase")),
+                 day_from(StockMovement.created_at, ctx.start), day_to(StockMovement.created_at, ctx.end)))
+    for pid, n in q.group_by(StockMovement.product_id).all():
+        got[pid] = got.get(pid, 0) + float(n or 0)
+    return got
+
+
+def _returned(ctx):
+    """{product id: qty} taken back on credit notes raised in the period."""
+    q = (ctx.credit_notes().order_by(None)
+         .join(CreditNoteItem, CreditNoteItem.credit_note_id == CreditNote.id)
+         .with_entities(CreditNoteItem.product_id, func.sum(CreditNoteItem.quantity))
+         .group_by(CreditNoteItem.product_id))
+    return {pid: float(n or 0) for pid, n in q.all()}
+
+
+def _previous(ctx):
+    """The period this one is compared with: the same number of days just before
+    it, or (compare = last_year) the same dates a year earlier."""
+    if ctx.params.get("compare") == "last_year":
+        def back(d):
+            try:
+                return d.replace(year=d.year - 1)
+            except ValueError:                       # 29 February
+                return d.replace(year=d.year - 1, day=28)
+        start, end = back(ctx.start), back(ctx.end)
+    else:
+        days = (ctx.end - ctx.start).days + 1
+        end = ctx.start - timedelta(days=1)
+        start = end - timedelta(days=days - 1)
+    return Ctx(start, end, company=ctx.company, location=ctx.location, counter=ctx.counter,
+               params=ctx.params, b2b=ctx.b2b), start, end
+
+
+def _change(now, then):
+    """(change, change %) — the % blank when there was nothing to compare with."""
+    diff = now - then
+    return _m(diff), (_pct(diff, then) if then else ("new" if now else 0.0))
+
+
+def _by_bill_floor(ctx):
+    """{floor id: {bills, qty, amount, items: {product id: amount}}} by the floor
+    each bill was raised on."""
+    agg = {}
+    for item, inv in ctx.lines().all():
+        a = agg.setdefault(inv.floor_id, {"bills": set(), "qty": 0.0, "amount": 0.0, "items": {}})
+        a["bills"].add(inv.id)
+        a["qty"] += item.quantity or 0
+        a["amount"] += _amount(item)
+        a["items"][item.product_id] = a["items"].get(item.product_id, 0) + _amount(item)
+    return agg
+
+
+def floor_sales(ctx):
+    multi = _several_branches()
+    agg = _by_bill_floor(ctx)
+    floors = {f.id: f for f in Floor.query.filter(Floor.id.in_([k for k in agg if k] or [0])).all()}
+    best = _products({max(a["items"], key=a["items"].get) for a in agg.values() if a["items"]})
+    total = sum(a["amount"] for a in agg.values())
+    rows = []
+    for fid, a in agg.items():
+        top = best.get(max(a["items"], key=a["items"].get)) if a["items"] else None
+        n = len(a["bills"])
+        rows.append([_floor_label(floors.get(fid), multi), n, _q(a["qty"]), _m(a["amount"]), _pct(a["amount"], total),
+                     _m(a["amount"] / n) if n else 0, top.name if top else "—"])
+    rows.sort(key=lambda r: -r[3])
+    totals = {"Bills": sum(r[1] for r in rows), "Qty": _qsum(rows, 2), "Sales": _sum(rows, 3)}
+    if rows:
+        totals["Highest floor"] = f"{rows[0][0]} ({rows[0][4]}%)"
+    return _result(["Floor", "Bills", "Qty", "Sales", "Share %", "Avg bill", "Best seller"], rows, totals,
+                   "By the floor each bill was raised on — its till's floor. Sales include tax. The first row "
+                   "is the floor that sold the most.")
+
+
+def product_sales(ctx):
+    multi = _several_branches()
+    sold = _per_product(ctx)
+    cond = _on_floor(ctx)
+    prods = _products(sold, cond)
+    total = sum(v[2] for pid, v in sold.items() if pid in prods)
+    rows = []
+    for pid, (bills, qty, amount) in sold.items():
+        p = prods.get(pid)
+        if p is None:
+            continue
+        rows.append([p.sku, p.name, p.category.name if p.category else "—", _floor_label(p.floor, multi),
+                     bills, _q(qty), _m(amount), _pct(amount, total)])
+    rows.sort(key=lambda r: -r[6])
+    for i, r in enumerate(rows, 1):
+        r.insert(0, i)
+    totals = {"Products": len(rows), "Qty": _qsum(rows, 6), "Sales": _sum(rows, 7)}
+    if rows:
+        totals["Best seller"] = rows[0][2]
+    return _result(["Rank", "SKU", "Product", "Category", "Floor", "Bills", "Qty", "Sales", "Share %"], rows,
+                   totals, "Every product sold in the period, best first. Floor is where the product is kept; "
+                           "sales include tax.")
+
+
+def floor_sales_purchase(ctx):
+    """Received against sold against held, floor by floor (the floor products are kept on)."""
+    multi = _several_branches()
+    agg = {}
+
+    def row(fid):
+        return agg.setdefault(fid, {"products": 0, "recv": 0.0, "recv_val": 0.0, "sold": 0.0, "sales": 0.0,
+                                    "ret": 0.0, "stock": 0.0, "stock_val": 0.0})
+    recv, ret, sold = _received(ctx), _returned(ctx), _per_product(ctx)
+    prods = _products(set(recv) | set(ret) | set(sold))
+    for pid, n in recv.items():
+        p = prods.get(pid)
+        r = row(p.floor_id if p else None)
+        r["recv"] += n
+        r["recv_val"] += n * ((p.cost_price or 0) if p else 0)
+    for pid, (_b, qty, amount) in sold.items():
+        p = prods.get(pid)
+        r = row(p.floor_id if p else None)
+        r["sold"] += qty
+        r["sales"] += amount
+    for pid, n in ret.items():
+        p = prods.get(pid)
+        row(p.floor_id if p else None)["ret"] += n
+    held = (db.session.query(Product.floor_id, func.count(Product.id), func.sum(func.coalesce(Product.stock_qty, 0)),
+                             func.sum(func.coalesce(Product.stock_qty, 0) * func.coalesce(Product.cost_price, 0)))
+            .filter(Product.active.is_(True)).group_by(Product.floor_id).all())
+    for fid, n, st, val in held:
+        r = row(fid)
+        r["products"], r["stock"], r["stock_val"] = int(n or 0), float(st or 0), float(val or 0)
+    floors = {f.id: f for f in Floor.query.filter(Floor.id.in_([k for k in agg if k] or [0])).all()}
+    rows = []
+    for fid, r in agg.items():
+        if not any((r["recv"], r["sold"], r["ret"], r["stock"])):
+            continue
+        rows.append([_floor_label(floors.get(fid), multi), r["products"], _q(r["recv"]), _m(r["recv_val"]),
+                     _q(r["sold"]), _m(r["sales"]), _q(r["ret"]), _q(r["stock"]), _m(r["stock_val"]),
+                     _pct(r["sold"], r["sold"] + r["stock"]) if r["sold"] + r["stock"] > 0 else 0])
+    rows.sort(key=lambda r: -r[5])
+    return _result(["Floor", "Products", "Received", "Received value", "Sold", "Sales", "Returned",
+                    "In stock now", "Stock value", "Sell-through %"], rows,
+                   {"Received": _qsum(rows, 2), "Received value": _sum(rows, 3), "Sold": _qsum(rows, 4),
+                    "Sales": _sum(rows, 5), "In stock now": _qsum(rows, 7), "Stock value": _sum(rows, 8)},
+                   "\"Purchase\" in the shop is stock RECEIVED — transfers counted in from the warehouse plus opening "
+                   "entries. Everything here is placed on the floor its product is kept on (Floor Products); values "
+                   "received and held are at cost, sales include tax.")
+
+
+def product_sales_purchase(ctx):
+    multi = _several_branches()
+    recv, ret, sold = _received(ctx), _returned(ctx), _per_product(ctx)
+    prods = _products(set(recv) | set(ret) | set(sold), _on_floor(ctx))
+    rows = []
+    for pid, p in prods.items():
+        _b, qty, amount = sold.get(pid, (0, 0.0, 0.0))
+        r, back, stock = recv.get(pid, 0.0), ret.get(pid, 0.0), p.stock_qty or 0
+        rows.append([p.sku, p.name, p.category.name if p.category else "—", _floor_label(p.floor, multi),
+                     _q(r), _m(r * (p.cost_price or 0)), _q(qty), _m(amount), _q(back), _q(stock),
+                     _pct(qty, qty + stock) if qty + stock > 0 else 0])
+    rows.sort(key=lambda r: (-r[7], -r[4]))
+    return _result(["SKU", "Product", "Category", "Floor", "Received", "Received value", "Sold", "Sales",
+                    "Returned", "In stock now", "Sell-through %"], rows,
+                   {"Products": len(rows), "Received": _qsum(rows, 4), "Received value": _sum(rows, 5),
+                    "Sold": _qsum(rows, 6), "Sales": _sum(rows, 7)},
+                   "Products received, sold or returned in the period — Stock Detail lists everything held. "
+                   "\"Purchase\" is stock received into the shop; received value is at cost, sales include tax.")
+
+
+def floor_compare(ctx):
+    multi = _several_branches()
+    prev, p_start, p_end = _previous(ctx)
+    now, then = _by_bill_floor(ctx), _by_bill_floor(prev)
+    floors = {f.id: f for f in Floor.query.filter(Floor.id.in_([k for k in set(now) | set(then) if k] or [0])).all()}
+    rows = []
+    for fid in set(now) | set(then):
+        a, b = now.get(fid), then.get(fid)
+        sa, sb = (a["amount"] if a else 0.0), (b["amount"] if b else 0.0)
+        ch, pc = _change(sa, sb)
+        rows.append([_floor_label(floors.get(fid), multi), _m(sa), _m(sb), ch, pc,
+                     len(a["bills"]) if a else 0, len(b["bills"]) if b else 0,
+                     _q(a["qty"] if a else 0), _q(b["qty"] if b else 0)])
+    rows.sort(key=lambda r: -r[1])
+    tn, tp = _sum(rows, 1), _sum(rows, 2)
+    return _result(["Floor", "This period", "Compared period", "Change", "Change %", "Bills now", "Bills then",
+                    "Qty now", "Qty then"], rows,
+                   {"This period": tn, "Compared period": tp, "Change": _m(tn - tp),
+                    "Change %": _pct(tn - tp, tp) if tp else "—"},
+                   f"Compared with {_d(p_start)} to {_d(p_end)}. By the floor each bill was raised on; sales include tax.")
+
+
+def product_compare(ctx):
+    multi = _several_branches()
+    prev, p_start, p_end = _previous(ctx)
+    now, then = _per_product(ctx), _per_product(prev)
+    prods = _products(set(now) | set(then), _on_floor(ctx))
+    rows = []
+    for pid, p in prods.items():
+        a, b = now.get(pid, (0, 0.0, 0.0)), then.get(pid, (0, 0.0, 0.0))
+        ch, pc = _change(a[2], b[2])
+        rows.append([p.sku, p.name, _floor_label(p.floor, multi), _q(a[1]), _m(a[2]), _q(b[1]), _m(b[2]), ch, pc])
+    rows.sort(key=lambda r: (-r[4], -r[6]))
+    tn, tp = _sum(rows, 4), _sum(rows, 6)
+    return _result(["SKU", "Product", "Floor", "Qty now", "Sales now", "Qty then", "Sales then", "Change",
+                    "Change %"], rows,
+                   {"Products": len(rows), "Sales now": tn, "Sales then": tp, "Change": _m(tn - tp)},
+                   f"Compared with {_d(p_start)} to {_d(p_end)}. Floor is where the product is kept; sales include tax.")
+
+
+# ===========================================================================
 #  the catalogue
 # ===========================================================================
 def _na(why, see=None):
     return {"unavailable": why, "see": see}
 
 
-#: Report-specific knobs the page draws as extra inputs.
+#: Report-specific knobs the page draws as extra inputs. `options` may be a
+#: function — the floors are read when the page is drawn, not when this loads.
+_FLOOR = {"key": "floor", "label": "Floor", "type": "select", "options": _floor_options, "default": ""}
+_COMPARE = {"key": "compare", "label": "Compare with", "type": "select", "default": "previous",
+            "options": [("previous", "The period just before"), ("last_year", "Same dates last year")]}
 PARAMS = {
+    "product_sales": [_FLOOR],
+    "product_sales_purchase": [_FLOOR],
+    "floor_compare": [_COMPARE],
+    "product_compare": [_COMPARE, _FLOOR],
     "inactive_customers": [{"key": "days", "label": "No bill for", "type": "select",
                             "options": [(30, "30 days"), (60, "60 days"), (90, "90 days"),
                                         (180, "180 days"), (365, "1 year")], "default": 90}],
@@ -1951,6 +2242,15 @@ GROUPS = [
         ("sales_vs_settlement", "Sales Vs Settlement Report", sales_vs_settlement, {}),
         ("sales_vs_stock", "Sales Vs Stock Report", sales_vs_stock, {}),
         ("sales_purchase_stock", "Sales Vs Purchase Vs Stock", sales_purchase_stock, {}),
+    ]),
+    ("comparison", "Comparison Reports", [
+        ("floor_sales", "Floor wise Sales", floor_sales, {}),
+        ("product_sales", "Product wise Sales", product_sales, {}),
+        ("floor_sales_purchase", "Sales Vs Purchase - Floor wise", floor_sales_purchase, {"places": "location"}),
+        ("product_sales_purchase", "Sales Vs Purchase - Product wise", product_sales_purchase,
+         {"places": "location"}),
+        ("floor_compare", "Floor wise Sales - Period Comparison", floor_compare, {}),
+        ("product_compare", "Product wise Sales - Period Comparison", product_compare, {}),
     ]),
     ("stock", "Stock Reports", [
         ("stock_detail", "Stock Detail Report", stock_detail,

@@ -42,14 +42,15 @@ from datetime import timedelta
 from sqlalchemy import func
 
 from .. import models, runtime
-from . import (audit as audit_svc, business_day, command_center as cc, crm_insights as crm, hr as hr_svc,
-               nlq, pos_insights, stock_locations as stock_loc, trace as trace_svc)
+from . import (audit as audit_svc, business_day, command_center as cc, crm_insights as crm, dates as date_svc,
+               hr as hr_svc, nlq, pos_insights, stock_locations as stock_loc, trace as trace_svc)
 from .figures import inr, inr_short, plural, qty as fmt_qty, spoken_inr
 
 #: What each intent answers — the model reads these lines.
 INTENTS = {
     "sales": "Sales taken at the stores' tills (POS) in a period. Optionally at one warehouse's stores, one store, a floor or a counter, of a category/product such as 'ladies shirts', by one staff member ('how much did Priya sell') or to one customer.",
-    "sales_rank": "WHICH warehouse, store, floor, counter, cashier, category, product or payment method sold the MOST (or the least) in a period.",
+    "sales_rank": "WHICH warehouse, store, floor, counter, cashier, category, product or payment method sold the MOST (or the least) in a period — and sales listed by one of those ('product wise sales yesterday', 'floor wise sales this month').",
+    "compare": "A COMPARISON: sales against purchases ('sales vs purchase this month', 'floor wise sales vs purchase', 'product wise sales vs purchase'), or sales in one period against another ('compare sales this month with last month', 'floor wise sales this week vs last week'). group_by says floor/product/category/store when it is asked 'wise'.",
     "bills": "The store BILLS themselves, listed — how many and what they came to in a period, optionally billed by one cashier, sold by one salesperson or bought by one customer. 'Bills billed by Priya today', 'Show R Kumar's bills this month'. (Supplier invoices are `invoices`.)",
     "discounts": "Discounts given on store bills in a period — the total, and who (which cashier) gave the most.",
     "profit": "Profit / gross margin on store sales in a period.",
@@ -89,7 +90,13 @@ INTENTS = {
 HR_INTENTS = ("payroll", "attendance", "staff_leave", "headcount")
 NONE = "none"
 GROUPS = ("warehouse", "store", "floor", "counter", "cashier", "staff", "category",
-          "product", "payment")
+          "product", "payment", "day")
+#: "floor wise", "product-wise", "day wise" — the grouping a list is asked for in.
+_WISE = re.compile(r"\b(floor|product|item|category|section|store|branch|shop|counter|cashier|staff|"
+                   r"salesman|salesperson|payment|day|date)[ -]?wise\b")
+_WISE_GROUP = {"item": "product", "section": "category", "branch": "store", "shop": "store",
+               "salesman": "staff", "salesperson": "staff", "date": "day"}
+_COMPARE = re.compile(r"\b(?:vs\.?|versus|compared?|comparison|comparing|against)\b|ஒப்பிடு")
 #: Who a named person is in a question about bills: the one who billed it, the
 #: one who sold it on the floor, the one who bought it — or "" for either of the
 #: first two.
@@ -258,6 +265,9 @@ def _offline(db, question):
     m_days = re.search(r"(\d{1,4})\s*\+?\s*days?", t)
     rank = _has(t, _RANK)
     group = next((g for g, words in _GROUP_WORDS if _has(t, words)), "")
+    wise = _WISE.search(t)
+    if wise:
+        group = _WISE_GROUP.get(wise.group(1), wise.group(1))
     code = _code_in(question)
 
     crm_code = _crm_code(question)
@@ -277,6 +287,10 @@ def _offline(db, question):
     elif re.search(r"\b(headcount|head count|staff strength|how many (?:staff|employees|people work)|employees? (?:joined|left|resigned)|"
                    r"new joiners?|joiners|attrition|resigned)\b", t):
         intent = "headcount"
+    # sales set against purchases, or one period against another
+    elif (_COMPARE.search(t) and (_has(t, _SALES) or re.search(r"purchase|bought|\bgrn", t))) \
+            or (_has(t, _SALES) and re.search(r"\b(?:and|with|&)\s+(?:purchases?|buying|grns?)\b", t)):
+        intent = "compare"
     elif _has(t, ("birthday", "anniversar", "பிறந்தநாள்")):
         intent = "birthdays"
     elif _has(t, ("gift voucher", "voucher", "gift card")):
@@ -348,16 +362,29 @@ def _offline(db, question):
     elif _has(t, _STOCK):
         intent = "stock_rank" if rank and group in ("warehouse", "category") else "stock"
     elif _has(t, _SALES) or _has(t, (" sell", "business today")):
-        intent = "sales_rank" if rank and group else "sales"
+        intent = "sales_rank" if (rank or wise) and group else "sales"
+    # "what products are on the ground floor" — what is kept there
+    elif re.search(r"\b(?:products?|items?|goods|garments?|what)\b", t) \
+            and re.search(r"\b(?:on|in|at)\s+(?:the\s+)?[a-z0-9]+\s+floor\b", t):
+        intent = "stock"
     else:
         intent = NONE
+
+    if intent == "compare":
+        # "this month with last month": the period asked about is the first one;
+        # the answer works out the one it is compared with
+        for now_words, then_words in (("this month", "last month"), ("this week", "last week"),
+                                      ("this year", "last year"), ("today", "yesterday")):
+            if now_words in t and then_words in t:
+                lo, hi = nlq.relative_range(now_words, today=today)
+                break
 
     # places named in the question
     wh = _names_in(question, _warehouse_rows(db), extra="code")
     st = _names_in(question, _store_rows(db), extra="code")
     floor = ""
     fm = re.search(r"\b([a-z0-9]+(?:\s+[a-z0-9]+)?\s+floor)\b", t)
-    if fm and intent not in ("sales_rank", "stock_rank"):
+    if fm and intent not in ("sales_rank", "stock_rank") and not (wise and group == "floor"):
         floor = fm.group(1).strip()
         floor = re.sub(r"^(on|in|at|the)\s+", "", floor)
     counter = ""
@@ -407,8 +434,9 @@ def _offline(db, question):
         "floor": floor, "counter": counter, "person": person, "person_role": person_role,
         "item": item,
         "code": code or "", "group_by": ("cashier" if intent == "discounts" and not group else group)
-        if intent in ("sales_rank", "stock_rank", "discounts") else "",
-        "order": "bottom" if _has(t, _BOTTOM) else ("top" if rank else ""),
+        if intent in ("sales_rank", "stock_rank", "discounts")
+        or (intent == "compare" and group in ("floor", "product", "category", "store", "day")) else "",
+        "order": "bottom" if _has(t, _BOTTOM) else ("top" if rank and not wise else ""),
         "days": m_days.group(1) if m_days else "",
         "confidence": "medium" if intent != NONE else "low",
         "engine": "keywords",
@@ -714,7 +742,7 @@ def a_sales(db, read, sc, per):
 
 _GROUP_NOUN = {"warehouse": "Warehouse", "store": "Store", "floor": "Floor", "counter": "Counter",
                "cashier": "Cashier", "staff": "Salesperson", "category": "Category",
-               "product": "Product", "payment": "Payment method"}
+               "product": "Product", "payment": "Payment method", "day": "Day"}
 
 
 def a_sales_rank(db, read, sc, per):
@@ -739,21 +767,197 @@ def a_sales_rank(db, read, sc, per):
         line = f"No store sales {_phrase(per['label'])} to rank by {noun.lower()}."
         return _out(f"Sales by {noun}", "—", line, ok=True)
     bottom = read.get("order") == "bottom"
-    pick = rows[-1] if bottom else rows[0]
+    if by == "day":                                   # a day-wise list reads in date order
+        rows.sort(key=lambda r: r["label"])
+        for r in rows:
+            r["label"] = _local_day(r["label"])
+    pick = (min(rows, key=lambda r: r["amount"]) if bottom else max(rows, key=lambda r: r["amount"]))
     total = sum(r["amount"] for r in rows) or 1
     word = "Lowest" if bottom else "Highest"
-    title = f"{word} Sales by {noun} — {per['label']}" + (f" ({_who_words(sc).strip()})" if sc.get("who") else "")
-    line = f"{word} Sales {_phrase(per['label'])}: {pick['label']} — {inr_short(pick['amount'])}."
+    who = f" ({_who_words(sc).strip()})" if sc.get("who") else ""
+    if read.get("order"):
+        title = f"{word} Sales by {noun} — {per['label']}{who}"
+        line = f"{word} Sales {_phrase(per['label'])}: {pick['label']} — {inr_short(pick['amount'])}."
+    else:
+        # asked "product wise" — the whole list, with the best named
+        title = f"{noun} wise Sales — {per['label']}{who}"
+        line = (f"{noun} wise sales {_phrase(per['label'])}: {inr_short(sum(r['amount'] for r in rows))} across "
+                f"{plural(len(rows), noun.lower())}; the most was {pick['label']} — {inr_short(pick['amount'])}.")
     speak = f"{word} sales: {pick['label']}, {spoken_inr(pick['amount'])}."
-    others = rows[1] if (not bottom and len(rows) > 1) else (rows[-2] if bottom and len(rows) > 1 else None)
+    ranked = sorted(rows, key=lambda r: r["amount"], reverse=not bottom)
+    others = ranked[1] if len(ranked) > 1 else None
     facts = [("Share", f"{pick['amount'] / total * 100:.1f}%"), ("Bills", fmt_qty(pick["bills"])),
              ("Next", f"{others['label']} — {inr_short(others['amount'])}" if others else None),
-             (f"{noun}s selling", fmt_qty(len(rows)))]
-    return _out(title, inr_short(pick["amount"]), line, speak, facts,
-                [noun, "Bills", "Sales", "Share %"],
-                [{noun: r["label"], "Bills": r["bills"], "Sales": r["amount"],
-                  "Share %": round(r["amount"] / total * 100, 1)} for r in rows],
+             (f"{noun}s selling", fmt_qty(len(rows))), ("Total", inr(sum(r["amount"] for r in rows)))]
+    with_qty = any(r.get("qty") is not None for r in rows)
+    cols = [noun, "Bills"] + (["Qty"] if with_qty else []) + ["Sales", "Share %"]
+    return _out(title, inr_short(pick["amount"]), line, speak, facts, cols,
+                [{noun: r["label"], "Bills": r["bills"], **({"Qty": r.get("qty")} if with_qty else {}),
+                  "Sales": r["amount"], "Share %": round(r["amount"] / total * 100, 1)} for r in rows],
                 None, {"tab": "central"})
+
+
+# ---------------------------------------------------------------------------
+#  Comparisons — sales against purchases, one period against another
+# ---------------------------------------------------------------------------
+def _pct_change(now, then):
+    return round((now - then) / then * 100, 1) if then else None
+
+
+def _change_words(now, then):
+    if not then:
+        return "nothing to compare with" if not now else "all new"
+    pc = _pct_change(now, then)
+    return f"{'up' if pc >= 0 else 'down'} {abs(pc):g}%"
+
+
+def _previous_period(read, per):
+    """The period a comparison is made against: the same days of the month (or
+    week) before — so the 1st–4th is set against the 1st–4th — or the same dates
+    a year earlier when last year is asked for."""
+    d0, d1 = business_day.parse_day(per["from"]), business_day.parse_day(per["to"])
+    t = f" {(read.get('question') or '').lower()} "
+    if "last year" in t and "this year" not in t:
+        def back(d):
+            try:
+                return d.replace(year=d.year - 1)
+            except ValueError:
+                return d.replace(year=d.year - 1, day=28)
+        p0, p1 = back(d0), back(d1)
+    elif d0.day == 1 and d0.month == d1.month and d0.year == d1.year:
+        last = d0 - timedelta(days=1)                       # the month before, same days
+        p0 = last.replace(day=1)
+        p1 = min(last, p0 + (d1 - d0))
+    else:
+        n = (d1 - d0).days + 1
+        p1 = d0 - timedelta(days=1)
+        p0 = p1 - timedelta(days=n - 1)
+    start, end = business_day.bounds(p0, p1)
+    return {"from": p0.isoformat(), "to": p1.isoformat(), "label": business_day.label(p0, p1),
+            "start": start, "end": end}
+
+
+def _purchases_in(db, sc, per):
+    """Posted GRNs whose supplier invoice falls in the period, in the account's warehouses."""
+    q =db.query(models.Purchase).filter(models.Purchase.status == "posted")
+    if sc["wh_ids"]:
+        q = q.filter(models.Purchase.warehouse_id.in_(sc["wh_ids"]))
+    out = []
+    for p in q.all():
+        d = date_svc.to_iso(p.invoice_date)
+        if d and per["from"] <= d <= per["to"]:
+            out.append((d, float(p.grand_total or 0)))
+    return out
+
+
+def a_compare(db, read, sc, per):
+    if not pos_insights.available():
+        return _no_pos()
+    t = f" {(read.get('question') or '').lower()} "
+    by = read.get("group_by") or ""
+    today = business_day.today()
+    if business_day.parse_day(per["to"]) > today >= business_day.parse_day(per["from"]):
+        # "this month" runs to the 30th; what has happened is to today, and that is
+        # what is set against the month before
+        per = _period({"date_from": per["from"], "date_to": today.isoformat()})
+    if re.search(r"purchase|bought|\bgrns?\b|receiv|inward|buying", t):
+        return _sales_vs_purchase(db, sc, per, by)
+    return _period_compare(read, sc, per, by)
+
+
+def _sales_vs_purchase(db, sc, per, by):
+    when = _phrase(per["label"])
+    if by in ("floor", "product"):
+        f = pos_insights.flow(per["start"], per["end"], by, sc["at"])
+        noun = "Floor" if by == "floor" else "Product"
+        rows = f.get("rows") or []
+        if not rows:
+            return _out(f"Sales vs Purchase by {noun}", "—", f"Nothing was received or sold {when}.")
+        recv, sales = sum(r["received_value"] for r in rows), sum(r["sales"] for r in rows)
+        top = rows[0]
+        title = _titled(per["label"], f"{noun} wise Sales vs Purchase")
+        line = (f"{title}: {inr_short(sales)} sold against {inr_short(recv)} of stock received at cost"
+                + (f"; {top['label']} sold the most — {inr_short(top['sales'])}." if top["sales"] else "."))
+        cols = ([noun] + (["SKU"] if by == "product" else [])
+                + ["Received", "Received value", "Sold", "Sales", "In stock now", "Stock value"])
+        out_rows = [{noun: r["label"], **({"SKU": r["sku"]} if by == "product" else {}),
+                     "Received": r["received"], "Received value": round(r["received_value"], 2),
+                     "Sold": r["sold"], "Sales": round(r["sales"], 2), "In stock now": r["stock"],
+                     "Stock value": round(r["stock_value"], 2)} for r in rows[:300]]
+        return _out(title, inr_short(sales), line, None,
+                    [("Sales", inr(sales)), ("Received (at cost)", inr(recv)),
+                     ("Pieces sold", fmt_qty(sum(r["sold"] for r in rows))),
+                     ("Pieces received", fmt_qty(sum(r["received"] for r in rows)))],
+                    cols, out_rows,
+                    "In the stores \"purchase\" is stock RECEIVED — transfers counted in from the warehouse plus "
+                    "opening entries. Placed on the floor each product is kept on. Store → Reports → Comparison "
+                    "Reports has the same by floor and by product.", {"tab": "pos:reports"})
+    # the business as a whole: what the warehouses bought, what the shops sold
+    bought = _purchases_in(db, sc, per)
+    days = {r["label"]: r for r in pos_insights.breakdown(per["start"], per["end"], "day", sc["at"])}
+    pv = round(sum(v for _, v in bought), 2)
+    t = pos_insights.totals(per["start"], per["end"], sc["at"])
+    sv = t.get("net", 0.0)
+    title = _titled(per["label"], "Sales vs Purchase")
+    if sc["place"]:
+        title += f" at {sc['place']}"
+    line = (f"{title}: sales {inr_short(sv)} against purchases {inr_short(pv)}"
+            + (f" — sales are {sv / pv * 100:.0f}% of purchases." if pv else " — nothing was purchased."))
+    per_day = {}
+    for d, v in bought:
+        a = per_day.setdefault(d, [0, 0.0, 0, 0.0])
+        a[0] += 1
+        a[1] += v
+    for d, r in days.items():
+        a = per_day.setdefault(d, [0, 0.0, 0, 0.0])
+        a[2], a[3] = r["bills"], r["amount"]
+    rows = [{"Day": _local_day(d), "GRNs": a[0], "Purchases": round(a[1], 2), "Bills": a[2],
+             "Sales": round(a[3], 2), "Difference": round(a[3] - a[1], 2)} for d, a in sorted(per_day.items())]
+    return _out(title, inr_short(sv - pv), line, f"Sales {spoken_inr(sv)} against purchases {spoken_inr(pv)}.",
+                [("Sales (net)", inr(sv)), ("Purchases (GRN)", inr(pv)), ("Difference", inr(sv - pv)),
+                 ("GRNs", fmt_qty(len(bought))), ("Bills", fmt_qty(t.get("bills", 0)))],
+                ["Day", "GRNs", "Purchases", "Bills", "Sales", "Difference"], rows,
+                "Purchases are posted GRNs by supplier-invoice date, at the bill's total. Sales are the stores' "
+                "takings net of returns; a day's figure is the bills raised that day. Reports → Sales Vs "
+                "Purchase - Daily has the same.", {"tab": "reports"})
+
+
+def _period_compare(read, sc, per, by):
+    prev = _previous_period(read, per)
+    noun = _GROUP_NOUN.get(by, "") if by else ""
+    title = (f"{noun} wise " if noun else "") + f"Sales — {per['label']} vs {prev['label']}"
+    if by and by != "day":
+        now = {r["label"]: r for r in pos_insights.breakdown(per["start"], per["end"], by, sc["at"])}
+        then = {r["label"]: r for r in pos_insights.breakdown(prev["start"], prev["end"], by, sc["at"])}
+        rows = []
+        for k in set(now) | set(then):
+            a, b = now.get(k, {}).get("amount", 0.0), then.get(k, {}).get("amount", 0.0)
+            rows.append({noun: k, per["label"]: a, prev["label"]: b, "Change": round(a - b, 2),
+                         "Change %": _pct_change(a, b)})
+        rows.sort(key=lambda r: -r[per["label"]])
+        sn, sp = sum(r[per["label"]] for r in rows), sum(r[prev["label"]] for r in rows)
+        grew = max(rows, key=lambda r: r["Change"]) if rows else None
+        fell = min(rows, key=lambda r: r["Change"]) if rows else None
+        line = (f"{title}: {inr_short(sn)} against {inr_short(sp)}, {_change_words(sn, sp)}"
+                + (f"; {grew[noun]} grew most ({inr_short(grew['Change'])})" if grew and grew["Change"] > 0 else "")
+                + (f"; {fell[noun]} fell most ({inr_short(fell['Change'])})" if fell and fell["Change"] < 0 else "")
+                + ".")
+        cols = [noun, per["label"], prev["label"], "Change", "Change %"]
+    else:
+        a = pos_insights.totals(per["start"], per["end"], sc["at"])
+        b = pos_insights.totals(prev["start"], prev["end"], sc["at"])
+        sn, sp = a.get("net", 0.0), b.get("net", 0.0)
+        line = f"{title}: {inr_short(sn)} against {inr_short(sp)} — {_change_words(sn, sp)}."
+        rows = [{"": lbl, per["label"]: x, prev["label"]: y, "Change": round(x - y, 2), "Change %": _pct_change(x, y)}
+                for lbl, x, y in (("Sales (net)", sn, sp), ("Bills", a.get("bills", 0), b.get("bills", 0)),
+                                  ("Units", a.get("units", 0), b.get("units", 0)),
+                                  ("Discount", a.get("discount", 0), b.get("discount", 0)),
+                                  ("Returns", a.get("returns", 0), b.get("returns", 0)))]
+        cols = ["", per["label"], prev["label"], "Change", "Change %"]
+    return _out(title, _change_words(sn, sp), line, None,
+                [(per["label"], inr(sn)), (prev["label"], inr(sp)), ("Change", inr(sn - sp))],
+                cols, rows, f"Compared with {_local_day(prev['from'])} to {_local_day(prev['to'])}.",
+                {"tab": "central"})
 
 
 def a_discounts(db, read, sc, per):
@@ -1923,7 +2127,7 @@ def a_crm_code(code):
     return None
 
 
-_DEFAULT_PERIOD = {"sales": "today", "sales_rank": "today", "discounts": "today",
+_DEFAULT_PERIOD = {"sales": "today", "sales_rank": "today", "discounts": "today", "compare": "month",
                    "profit": "today", "purchases": "today", "payments": "today",
                    "returns": "today", "transfers": "today", "activity": "today",
                    "invoices": "today", "lr": "today",
@@ -2016,7 +2220,7 @@ def ask(db, question, role="admin", allowed=None, hr=False):
     per = _period(read, _DEFAULT_PERIOD.get(intent, "today"))
     builders = {
         "sales": a_sales, "sales_rank": a_sales_rank, "discounts": a_discounts,
-        "profit": a_profit, "purchases": a_purchases, "payments": a_payments,
+        "profit": a_profit, "purchases": a_purchases, "payments": a_payments, "compare": a_compare,
         "invoices": a_invoices, "lr": a_lr, "bills": a_bills,
         "pending_payments": a_pending_payments, "pending_grns": a_pending_grns,
         "returns": a_returns, "stock": a_stock, "stock_rank": a_stock_rank,

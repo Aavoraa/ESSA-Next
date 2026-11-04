@@ -477,6 +477,46 @@ a = ask("Who gave the highest discount today?")
 eq("routed to discounts", a["intent"], "discounts")
 has("naming the cashier and the amount", a["line"], "Ravi Kumar — ₹200")
 
+head("…and sales against purchase, side by side")
+day = TODAY.isoformat()
+r = client.get("/api/reports/sales_vs_purchase", headers=head_boss,
+               params={"date_from": day, "date_to": day}).json()
+by_day = client.get("/api/reports/pos_sales_by_day", headers=head_boss,
+                    params={"date_from": day, "date_to": day}).json()
+eq("one day with both", [x["day"] for x in r["rows"]], [day])
+eq("bought: the posted GRN only, not the draft", (r["rows"][0]["grns"], r["rows"][0]["purchases"]), (1, 21000.0))
+eq("sold: the same figure Store Sales - Daily shows", r["rows"][0]["sales"], by_day["rows"][-1]["net"])
+eq("the difference worked out", r["totals"]["difference"], round(r["totals"]["sales"] - 21000.0, 2))
+r = client.get("/api/reports/pos_sales_by_day", headers=head_boss,
+               params={"date_from": (TODAY - dt.timedelta(days=2)).isoformat(), "date_to": day}).json()
+eq("Store Sales - Daily now keeps to the dates asked for", len(r["rows"]), 3)
+
+a = ask("Product wise sales today")
+eq("'product wise' is the list by product", (a["intent"], a["title"][:19]), ("sales_rank", "Product wise Sales "))
+eq("…every product sold, with the pieces", (sorted(r["Product"] for r in a["rows"]), "Qty" in a["columns"]),
+   (["KIDS FROCK", "LADIES SHIRT BLUE"], True))
+a = ask("floor wise sales today")
+eq("'floor wise' by floor", sorted(r["Floor"] for r in a["rows"]), ["First Floor", "Ground Floor"])
+a = ask("Yesterday's total sales product wise")
+eq("yesterday's, product by product", (a["intent"], [r["Product"] for r in a["rows"]]), ("sales_rank", ["KIDS FROCK"]))
+a = ask("Sales vs purchase today")
+eq("sales against purchase is a comparison", a["intent"], "compare")
+facts = {f["label"]: f["value"] for f in a["facts"]}
+eq("…the posted GRN against the takings", (facts["Purchases (GRN)"], facts["Sales (net)"]), ("₹21,000", "₹1,475"))
+a = ask("Floor wise sales vs purchase today")
+eq("…and floor by floor in the stores", (a["intent"], a["columns"][:3]), ("compare", ["Floor", "Received", "Received value"]))
+eq("…what each floor sold", {r["Floor"]: r["Sales"] for r in a["rows"]}, {"Ground Floor": 2100.0, "First Floor": 525.0})
+a = ask("Compare sales today with yesterday")
+eq("one day against the one before", (a["intent"], a["rows"][0][""]), ("compare", "Sales (net)"))
+eq("…today's and yesterday's figures", [a["rows"][0][c] for c in a["columns"][1:3]], [1475.0, 1050.0])
+span = f"{(TODAY - dt.timedelta(days=1)).strftime('%d-%m-%Y')} to {TODAY.strftime('%d-%m-%Y')}"
+a = ask(f"Sales from {span}")
+eq("a range of dates is read as a range", (a["interpretation"]["applied"].get("date_from"),
+                                            a["interpretation"]["applied"].get("date_to")),
+   ((TODAY - dt.timedelta(days=1)).isoformat(), TODAY.isoformat()))
+a = ask("What products are on first floor?")
+eq("what a floor holds", (a["intent"], [r["Product"] for r in a["rows"]]), ("stock", ["KIDS FROCK"]))
+
 a = ask("Show pending supplier payments")
 eq("routed to what is owed", a["intent"], "pending_payments")
 has("with the total and the supplier", a["line"], "₹11,000")

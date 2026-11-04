@@ -163,6 +163,7 @@ def create_app(config_class=Config):
     from app.routes.stores import stores_bp
     from app.routes.store_stock import store_stock_bp
     from app.routes.audits import audits_bp
+    from app.routes.floor_products import floor_products_bp
     from app.routes.coupons import coupons_bp
     from app.routes.drawer import drawer_bp
     from app.routes.feedback import feedback_bp
@@ -192,6 +193,7 @@ def create_app(config_class=Config):
     app.register_blueprint(stores_bp, url_prefix="/stores")
     app.register_blueprint(store_stock_bp)          # /stock-inward/, /transfer-goods/
     app.register_blueprint(audits_bp, url_prefix="/audits")
+    app.register_blueprint(floor_products_bp, url_prefix="/floor-products")
     app.register_blueprint(coupons_bp, url_prefix="/coupons")
     app.register_blueprint(drawer_bp, url_prefix="/drawer")
     # The customer's own feedback page: no login, reached from the QR on a bill.

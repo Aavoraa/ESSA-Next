@@ -201,7 +201,7 @@ def location_ids_for(db, warehouse_id=None):
     return [int(lid) for lid, name in rows if _norm(name) in wanted]
 
 
-def daily(db, days=14, warehouse_id=None, today=None):
+def daily(db, days=14, warehouse_id=None, today=None, date_from=None, date_to=None):
     """Net takings per day across the shops — what a trend line is drawn from.
 
     Every day in the window appears, including the ones nothing sold on. A chart
@@ -211,10 +211,12 @@ def daily(db, days=14, warehouse_id=None, today=None):
     none before counters existed — is real money but belongs to no shop, so
     including it here would make the trend disagree with the per-store table
     beneath it. It is reported separately, by `by_store`, as `unplaced`.
+
+    `date_from`/`date_to` (ISO) give the window instead of the last `days`.
     """
-    start, end = _window(days, None, None, today)
+    start, end = _window(days, date_from, date_to, today)
     if not pos_sales.available():
-        return {"available": False, "labels": [], "net": [], "bills": []}
+        return {"available": False, "labels": [], "net": [], "bills": [], "days": []}
 
     where, params = pos_sales._window(start, end, "i.invoice_date")
     # …and only this warehouse's shops, when one was named. The parameter was
@@ -228,6 +230,7 @@ def daily(db, days=14, warehouse_id=None, today=None):
             return {"available": True,
                     "labels": [(d0 + dt.timedelta(days=i)).strftime("%d %b")
                                for i in range(n)],
+                    "days": [(d0 + dt.timedelta(days=i)).isoformat() for i in range(n)],
                     "net": [0.0] * n, "bills": [0] * n,
                     "window": {"from": start, "to": end}}
         where += " AND i.location_id IN (" + ",".join("?" for _ in ids) + ")"
@@ -248,13 +251,14 @@ def daily(db, days=14, warehouse_id=None, today=None):
     got = {str(d): (float(t or 0), int(b or 0)) for d, t, b in rows if d}
 
     d0, d1 = dt.date.fromisoformat(start), dt.date.fromisoformat(end)
-    labels, net, bills = [], [], []
+    labels, net, bills, days_iso = [], [], [], []
     day = d0
     while day <= d1:
         iso = day.isoformat()
+        days_iso.append(iso)
         labels.append(day.strftime("%d %b"))
         net.append(round(got.get(iso, (0.0, 0))[0], 2))
         bills.append(got.get(iso, (0.0, 0))[1])
         day += dt.timedelta(days=1)
-    return {"available": True, "labels": labels, "net": net, "bills": bills,
+    return {"available": True, "labels": labels, "net": net, "bills": bills, "days": days_iso,
             "window": {"from": start, "to": end}}

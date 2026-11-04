@@ -854,7 +854,8 @@ def pos_sales_by_store(db, date_from=None, date_to=None, warehouse_id=None):
 def pos_sales_by_day(db, date_from=None, date_to=None, warehouse_id=None):
     """Net shop takings per day. Every day appears, including the quiet ones."""
     from . import pos_store_sales
-    d = pos_store_sales.daily(db, days=30, warehouse_id=warehouse_id)
+    d = pos_store_sales.daily(db, days=30, warehouse_id=warehouse_id,
+                              date_from=date_svc.to_iso(date_from), date_to=date_svc.to_iso(date_to))
     cols = ["day", "bills", "net"]
     if not d.get("available"):
         return _rep(cols, [], {},
@@ -866,6 +867,55 @@ def pos_sales_by_day(db, date_from=None, date_to=None, warehouse_id=None):
                  "net": _r2(sum(r["net"] for r in rows))},
                 note="Bills raised AT A BRANCH. Takings from before the till "
                      "recorded a branch belong to no shop and are not here.")
+
+
+def sales_vs_purchase(db, date_from=None, date_to=None, warehouse_id=None):
+    """What the business bought against what its shops sold, day by day.
+
+    Purchases are posted GRNs by their supplier-invoice date, at the bill's
+    grand total; sales are the shops' net takings (bills raised at a branch, as
+    Store Sales - Daily counts them). Without dates, the last 30 days."""
+    from . import pos_store_sales
+    lo, hi = date_svc.to_iso(date_from), date_svc.to_iso(date_to)
+    d = pos_store_sales.daily(db, days=30, warehouse_id=warehouse_id, date_from=lo, date_to=hi)
+    if not d.get("available"):
+        lo, hi = pos_store_sales._window(30, lo, hi)
+        days = []
+        day = dt.date.fromisoformat(lo)
+        while day.isoformat() <= hi:
+            days.append(day.isoformat())
+            day += dt.timedelta(days=1)
+        sales = {k: (0.0, 0) for k in days}
+    else:
+        lo, hi = d["window"]["from"], d["window"]["to"]
+        days = d["days"]
+        sales = {k: (d["net"][i], d["bills"][i]) for i, k in enumerate(days)}
+    bought = defaultdict(lambda: [0, 0.0])
+    for p in _posted(db, lo, hi):
+        if warehouse_id and p.warehouse_id != int(warehouse_id):
+            continue
+        k = date_svc.to_iso(p.invoice_date)
+        bought[k][0] += 1
+        bought[k][1] += _f(p.grand_total)
+    cols = ["day", "grns", "purchases", "bills", "sales", "difference", "sales_to_purchase_pct"]
+    rows = []
+    for k in days:
+        pn, pv = bought.get(k, (0, 0.0))
+        sv, sb = sales.get(k, (0.0, 0))
+        if not (pn or sb):
+            continue
+        rows.append({"day": k, "grns": pn, "purchases": _r2(pv), "bills": sb, "sales": _r2(sv),
+                     "difference": _r2(sv - pv),
+                     "sales_to_purchase_pct": round(sv / pv * 100, 1) if pv else None})
+    tp, ts = sum(r["purchases"] for r in rows), sum(r["sales"] for r in rows)
+    note = ("Purchases: posted GRNs by invoice date, grand total. Sales: the shops' net takings. "
+            "Days with neither are left out.")
+    if not d.get("available"):
+        note = "The shop (POS) module could not be read from here — sales are blank. " + note
+    return _rep(cols, rows, {"days": len(rows), "purchases": _r2(tp), "sales": _r2(ts),
+                             "difference": _r2(ts - tp),
+                             "sales_to_purchase_pct": round(ts / tp * 100, 1) if tp else None,
+                             "window": f"{lo} to {hi}"}, note=note)
 
 
 def warehouse_wise_stock(db, warehouse_id=None):
@@ -1406,6 +1456,7 @@ REPORTS = {
     # which side of the wall a figure came from.
     "pos_sales_by_store": ("Sales by Store", "sales", pos_sales_by_store),
     "pos_sales_by_day": ("Store Sales - Daily", "sales", pos_sales_by_day),
+    "sales_vs_purchase": ("Sales Vs Purchase - Daily", "sales", sales_vs_purchase),
     "stock_audit_report": ("Stock Audit Report", "stock", stock_audit_report),
     # --- purchase ---
     "purchase_register": ("Purchase Report", "purchase", purchase_register),

@@ -41,6 +41,8 @@ _BY = {
     "staff": ("COALESCE(s.full_name, s.username, '(not recorded)')",
               " LEFT JOIN {users} s ON s.id = i.staff_id"),
     "payment": ("COALESCE(i.payment_method, 'cash')", ""),
+    # the bill's date, as text — the first ten characters of the timestamp on both engines
+    "day": ("SUBSTR(CAST(i.invoice_date AS CHAR(30)),1,10)", ""),
 }
 #: Groupings that live on the LINE rather than the bill.
 _ITEM_BY = {
@@ -547,6 +549,75 @@ def sold_by_product(start, end, ids, at=None):
         "WHERE i.invoice_date >= ? AND i.invoice_date < ?" + LIVE + w_sql + f" AND ii.product_id IN ({marks})"
         " GROUP BY ii.product_id", win_params(start, end) + w_params + [int(x) for x in ids])
     return {r[0]: (int(r[1] or 0), round(_num(r[2]), 3), round(_num(r[3]), 2)) for r in rows}
+
+
+def flow(start, end, by="floor", at=None):
+    """Received against sold against held, by the floor a product is kept on or
+    by product: [{label, sku, received, received_value, sold, sales, stock,
+    stock_value}], most sold first.
+
+    "Received" is what the store took in over [start, end): transfers counted in
+    from the warehouse plus opening entries — the store buys nothing itself. It
+    is valued at the product's cost; sales include tax, as everywhere here."""
+    if not available():
+        return {"available": False}
+    if by == "product":
+        key, label, join = "p.id", "p.name", ""
+    else:
+        key, label = "COALESCE(f.name, '(no floor)')", "COALESCE(f.name, '(no floor)')"
+        join = " LEFT JOIN " + _t("floors") + " f ON f.id = p.floor_id"
+    win = [_ts(start), _ts(end)]
+    locs = (at or {}).get("location_ids")
+    loc_sql = ""
+    if locs is not None:
+        loc_sql = " AND tr.location_id IN (" + (",".join("?" for _ in locs) or "NULL") + ")"
+    rows = {}
+
+    def row(k, lbl, sku=None):
+        return rows.setdefault(k, {"label": lbl, "sku": sku, "received": 0.0, "received_value": 0.0,
+                                   "sold": 0.0, "sales": 0.0, "stock": 0.0, "stock_value": 0.0})
+    sku = "p.sku" if by == "product" else "NULL"
+    for k, lbl, s, q, v in pos_sales._rows(
+            f"SELECT {key}, {label}, {sku}, SUM(tr.qty), SUM(tr.qty * COALESCE(p.cost_price,0)) "
+            "FROM " + _t("transfer_receipts") + " tr JOIN " + _t("products") + " p ON p.id = tr.product_id" + join +
+            " WHERE tr.applied_at >= ? AND tr.applied_at < ?" + loc_sql + f" GROUP BY {key}, {label}, {sku}",
+            win + [int(x) for x in (locs or [])]):
+        r = row(k, lbl, s)
+        r["received"] += _num(q)
+        r["received_value"] += _num(v)
+    if locs is None:                       # opening entries belong to no branch
+        for k, lbl, s, q, v in pos_sales._rows(
+                f"SELECT {key}, {label}, {sku}, SUM(sm.change), SUM(sm.change * COALESCE(p.cost_price,0)) "
+                "FROM " + _t("stock_movements") + " sm JOIN " + _t("products") + " p ON p.id = sm.product_id" + join +
+                " WHERE sm.change > 0 AND sm.reason IN ('opening','purchase') AND sm.created_at >= ? AND sm.created_at < ?"
+                f" GROUP BY {key}, {label}, {sku}", win):
+            r = row(k, lbl, s)
+            r["received"] += _num(q)
+            r["received_value"] += _num(v)
+    w_sql, w_params = _where(at)
+    for k, lbl, s, q, v in pos_sales._rows(
+            f"SELECT {key}, {label}, {sku}, SUM(ii.quantity), SUM(ii.line_total + COALESCE(ii.tax_amount,0)) "
+            "FROM " + _t("invoice_items") + " ii JOIN " + _t("invoices") + " i ON i.id = ii.invoice_id "
+            "JOIN " + _t("products") + " p ON p.id = ii.product_id" + join +
+            " WHERE i.invoice_date >= ? AND i.invoice_date < ?" + LIVE + w_sql + f" GROUP BY {key}, {label}, {sku}",
+            win + w_params):
+        r = row(k, lbl, s)
+        r["sold"] += _num(q)
+        r["sales"] += _num(v)
+    held_where = "" if by != "product" else (" AND p.id IN (" + ",".join(str(int(k)) for k in rows) + ")"
+                                             if rows else " AND 1=0")
+    for k, lbl, s, q, v in pos_sales._rows(
+            f"SELECT {key}, {label}, {sku}, SUM(COALESCE(p.stock_qty,0)), "
+            "       SUM(COALESCE(p.stock_qty,0) * COALESCE(p.cost_price,0)) "
+            "FROM " + _t("products") + " p" + join +
+            " WHERE (p.active IS NULL OR p.active = ?)" + held_where + f" GROUP BY {key}, {label}, {sku}", [True]):
+        r = row(k, lbl, s)
+        r["stock"] += _num(q)
+        r["stock_value"] += _num(v)
+    out = [{k2: (round(v2, 3) if isinstance(v2, float) else v2) for k2, v2 in r.items()}
+           for r in rows.values() if r["received"] or r["sold"] or r["stock"]]
+    out.sort(key=lambda r: (-r["sales"], -r["received_value"]))
+    return {"available": True, "rows": out}
 
 
 def store_stock_of(warehouse_product_id):

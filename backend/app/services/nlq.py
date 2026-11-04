@@ -306,6 +306,15 @@ def relative_range(text, today=None):
     def has(words):
         return any(w in t for w in words)
 
+    # An explicit range — "from 01-11-2026 to 04-11-2026", "between 1 Nov and 4 Nov".
+    # Read before the single-day phrases, or only its first date would be kept.
+    one = r"(\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}|\d{4}-\d{2}-\d{2}|\d{1,2}(?:st|nd|rd|th)?\s+[a-z]{3,9}(?:\s+\d{4})?)"
+    rm = re.search(rf"\b{one}\s*(?:to|till|until|and|–|—)\s*{one}", t)
+    if rm:
+        a, b = relative_range(rm.group(1), today), relative_range(rm.group(2), today)
+        if a[0] and b[0] and a[0] == a[1] and b[0] == b[1]:
+            return min(a[0], b[0]), max(a[0], b[0])
+
     if has(_TODAY_WORDS):
         return today.isoformat(), today.isoformat()
     if has(_YESTERDAY_WORDS):

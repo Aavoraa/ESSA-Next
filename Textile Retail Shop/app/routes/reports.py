@@ -261,6 +261,7 @@ def report(key):
     return render_template(
         "reports/view.html", spec=spec, result=result, numeric=numeric,
         start=start, end=end, chosen=chosen, places=place_lists(), params=params,
+        now_date=date.today(), one_day=timedelta(days=1),
         see=retail_reports.REPORTS.get(spec.get("see")) if spec.get("see") else None)
 
 
