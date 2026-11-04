@@ -2156,6 +2156,25 @@ def ask(db, question, role="admin", allowed=None, hr=False):
                           if read.get(k)},
               "notes": []}
 
+    # Part of a mobile number — its last five digits, say — finds the customers it
+    # belongs to. Only when some customer's number holds it; otherwise it goes on
+    # to be tracked like any other code.
+    part = re.sub(r"[\s\-+().]", "", question)
+    if part.isdigit() and 5 <= len(part) <= 9 and crm.available():
+        hits = crm.customers_by_digits(part)
+        if len(hits) == 1 and hits[0]["phone"]:
+            c = crm.find_customer(hits[0]["phone"])
+            if c:
+                interp.update(intent="customer", reading=f"the customer whose mobile has {part}")
+                return {**_profile(c), "question": question, "intent": "customer", "interpretation": interp}
+        if hits:
+            interp.update(intent="customer", reading=f"customers whose mobile has {part}")
+            out = _out("Customers", str(len(hits)), f"{plural(len(hits), 'customer')} with {part} in their mobile number — "
+                       "which one?", None, None, ["Customer", "Mobile", "Points", "Lifetime spend"],
+                       [{"Customer": h["name"], "Mobile": h["phone"] or "—", "Points": h["points"],
+                         "Lifetime spend": h["spent"]} for h in hits], None, {"tab": "pos:customers"})
+            return {**out, "question": question, "intent": "customer", "interpretation": interp}
+
     # A CRM document number (an order, a gift voucher) is the CRM's to answer,
     # not the warehouse trace's.
     if intent == "trace":

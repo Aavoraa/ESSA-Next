@@ -70,13 +70,45 @@ def _loc(loc, col):
 # ---------------------------------------------------------------------------
 #  one customer
 # ---------------------------------------------------------------------------
-_PHONE = re.compile(r"(?<!\d)(\+?\d{10,13})(?!\d)")
+# A number however it is written: 9900011111, +91 99000 11111, 099000-11111,
+# (990) 001-1111. Digits with spaces, dashes, dots or brackets between them.
+_PHONE = re.compile(r"(?<![\d/])(\+?\(?\d[\d\s\-.()]{8,20}\d)(?![\d/])")
 _CUST_CODE = re.compile(r"\bCUST0*(\d{1,9})\b", re.I)
+#: The stored number with everything but its digits taken out, in SQL — so
+#: "+91 99000 11111" on the customer and 9900011111 in the question are one number.
+_DIGITS_SQL = ("REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE({col},''),"
+               "' ',''),'-',''),'+',''),'(',''),')',''),'.','')")
 
 
 def phone_in(text):
-    m = _PHONE.search(text or "")
-    return m.group(1) if m else None
+    """The mobile number in a question, as digits — the last ten of an Indian
+    number written with +91 or a leading 0 — or None."""
+    for m in _PHONE.finditer(text or ""):
+        raw = m.group(1)
+        if re.search(r"\d[/\-.]\d{1,2}[/\-.]\d{2,4}\b", raw) and len(re.findall(r"\d+", raw)) == 3:
+            continue                                   # 04-11-2026 is a date, not a number
+        d = re.sub(r"\D", "", raw)
+        if len(d) == 12 and d.startswith("91") or len(d) == 11 and d.startswith("0"):
+            d = d[-10:]
+        if len(d) == 10:                               # 13 digits is a barcode, not a phone
+            return d
+    return None
+
+
+def _phone_match(col, digits):
+    """(sql, params): `col` holds this number, whatever spaces or +91 it was saved with."""
+    return f"{_DIGITS_SQL.format(col=col)} LIKE ?", [f"%{digits[-10:]}"]
+
+
+def customers_by_digits(digits, limit=10):
+    """Customers whose mobile contains these digits — a number half remembered,
+    or its last few digits."""
+    expr = _DIGITS_SQL.format(col="phone")
+    alt = _DIGITS_SQL.format(col="alt_phone")
+    return [{"id": r[0], "name": r[1], "phone": r[2], "points": _n(r[3]), "spent": _n(r[4])}
+            for r in _rows(f"SELECT id, name, phone, loyalty_points, total_spent FROM {_t('customers')} "
+                           f"WHERE {expr} LIKE ? OR {alt} LIKE ? ORDER BY total_spent DESC LIMIT {int(limit)}",
+                           [f"%{digits}%", f"%{digits}%"])]
 
 
 def find_customer(text):
@@ -90,8 +122,9 @@ def find_customer(text):
     phone = phone_in(text)
     row = None
     if phone:
-        row = _one(f"SELECT {cols} FROM {_t('customers')} c WHERE c.phone = ? OR c.alt_phone = ? "
-                   "ORDER BY c.id LIMIT 1", [phone, phone])
+        a, pa = _phone_match("c.phone", phone)
+        b, pb = _phone_match("c.alt_phone", phone)
+        row = _one(f"SELECT {cols} FROM {_t('customers')} c WHERE {a} OR {b} ORDER BY c.id LIMIT 1", pa + pb)
     if row is None:
         m = _CUST_CODE.search(text)
         if m:
