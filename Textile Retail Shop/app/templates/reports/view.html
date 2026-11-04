@@ -86,7 +86,7 @@
     <div class="col-md-2"><label class="form-label small mb-1">{{ p.label }}</label>
       {% if p.type == 'select' %}
       <select class="form-select" name="{{ p.key }}">
-        {% for val, text in p.options %}
+        {% for val, text in (p.options() if p.options is callable else p.options) %}
         <option value="{{ val }}" {% if params[p.key]|string == val|string %}selected{% endif %}>{{ text }}</option>
         {% endfor %}
       </select>
@@ -97,6 +97,21 @@
     {% endfor %}
     <div class="col-md-auto"><button class="btn btn-brand">Apply</button></div>
   </div>
+  {% if spec.dated %}
+  {# One click for the periods asked for most; the dates above stay editable. #}
+  {% set today = now_date %}
+  {% set month1 = today.replace(day=1) %}
+  {% set last_end = month1 - one_day %}
+  <div class="rpt-presets mt-2" role="group" aria-label="Quick periods">
+    {% for label, a, b in [('Today', today, today), ('Yesterday', today - one_day, today - one_day),
+                          ('Last 7 days', today - one_day * 6, today), ('This month', month1, today),
+                          ('Last month', last_end.replace(day=1), last_end)] %}
+    {% set args = request.args.to_dict() %}{% set _ = args.update({'from': a.isoformat(), 'to': b.isoformat()}) %}
+    <a class="btn btn-sm {{ 'btn-brand' if start == a and end == b else 'btn-outline-secondary' }}"
+       href="{{ request.path }}?{{ args|urlencode }}">{{ label }}</a>
+    {% endfor %}
+  </div>
+  {% endif %}
   {% if not spec.places %}
   <div class="small text-muted mt-2"><i class="bi bi-info-circle"></i>
     This report covers the whole shop — it cannot be split by branch or till.</div>

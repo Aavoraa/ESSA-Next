@@ -42,6 +42,8 @@
         {% endif %}
         <span class="text-muted small ms-2">GST {{ product.gst_rate }}% · HSN {{ product.hsn_code }}</span>
       </div>
+      <div class="mt-1 small"><i class="bi bi-layers"></i> Kept on
+        <a href="{{ url_for('floorplan.index', floor=product.floor_id or 'none') }}"><strong>{{ product.floor.name if product.floor else 'no floor yet' }}</strong></a></div>
     </div>
     {% if product.warehouse_qr %}
     <div class="text-center"><div style="width:110px">{{ product.warehouse_qr | qr(scale=3) }}</div>
@@ -179,7 +181,7 @@
   <div class="table-responsive">
     <table class="table table-hover mb-0 align-middle">
       <thead><tr><th>SKU</th><th>Item</th><th>Attributes</th>
-        <th class="text-end">Price</th><th class="text-end">Shop stock</th><th></th></tr></thead>
+        <th>Floor</th><th class="text-end">Price</th><th class="text-end">Shop stock</th><th></th></tr></thead>
       <tbody>
         {% for p in results %}
         <tr class="{% if p.stock_qty <= 0 %}table-warning{% endif %}">
@@ -188,6 +190,7 @@
           <td class="small text-muted">
             {{ [p.size, p.color, p.fabric, p.pattern, p.fit] | select | join(' · ') }}
           </td>
+          <td class="small">{{ p.floor.name if p.floor else '—' }}</td>
           <td class="text-end">{{ p.selling_price|inr }}</td>
           <td class="text-end {% if p.stock_qty <= 0 %}text-danger fw-bold{% endif %}">
             {{ p.stock_qty }} {{ p.unit }}</td>

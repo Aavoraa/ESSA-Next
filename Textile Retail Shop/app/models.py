@@ -333,6 +333,32 @@ class Floor(db.Model):
                                           name="uq_floor_location_name"),)
 
 
+class ProductFloorMove(db.Model):
+    """One product moved from one storey to another (Store → Floor Products).
+
+    A move is a change of PLACE, never of quantity — `Product.floor_id` says
+    where an item is kept, and this is the trail of who changed that and when.
+    The products moved together share a `batch`, which is what lets a whole move
+    ("all of BOYS to the first floor") be read back, and undone, as one.
+    """
+    __tablename__ = "product_floor_moves"
+    id = db.Column(db.Integer, primary_key=True)
+    batch = db.Column(db.String(16), nullable=False, index=True)
+    product_id = db.Column(db.Integer, db.ForeignKey("products.id"), nullable=False, index=True)
+    from_floor_id = db.Column(db.Integer, db.ForeignKey("floors.id"))
+    to_floor_id = db.Column(db.Integer, db.ForeignKey("floors.id"))
+    note = db.Column(db.String(256))
+    moved_by_id = db.Column(db.Integer, db.ForeignKey("users.id"))
+    moved_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    #: set on the rows of a batch that has been put back, by the batch that did it
+    undone_by = db.Column(db.String(16))
+
+    product = db.relationship("Product")
+    from_floor = db.relationship("Floor", foreign_keys=[from_floor_id])
+    to_floor = db.relationship("Floor", foreign_keys=[to_floor_id])
+    moved_by = db.relationship("User")
+
+
 class Counter(db.Model):
     """One till at one location. Two tills at a branch are two drawers."""
     __tablename__ = "counters"

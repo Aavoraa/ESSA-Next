@@ -44,6 +44,10 @@ MODULES = [
      "label": "Stock audit", "owns": ["audits."], "manager": False,
      "blurb": "Count a floor, item by item, and see where the books disagree"},
 
+    {"key": "floor_products", "endpoint": "floorplan.index", "icon": "bi-layers",
+     "label": "Floor Products", "owns": ["floorplan."], "manager": False,
+     "blurb": "What is kept on each floor, and moving products between floors"},
+
     {"key": "checker", "endpoint": "checker.index", "icon": "bi-search",
      "label": "Stock check", "owns": ["checker."], "manager": False,
      "blurb": "Scan or filter to find an item and where it is"},
