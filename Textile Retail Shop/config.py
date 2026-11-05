@@ -52,6 +52,15 @@ class Config:
     # (otherwise Flask caches them until the server restarts).
     TEMPLATES_AUTO_RELOAD = True
 
+    # The sign-in cookie is not sent with a form another website posts here.
+    # The shop's forms carry no token of their own, so without this a page on any
+    # site could submit one — a refund, a floor move — as whoever is signed in
+    # (Firefox and Safari send a cookie with no SameSite on such a post). Lax
+    # still sends it on every page of the shop and inside the Essa frame, which
+    # is the same site; only the cross-site POST loses it.
+    SESSION_COOKIE_SAMESITE = "Lax"
+    REMEMBER_COOKIE_SAMESITE = "Lax"
+
     # Business / GST defaults
     # The shop's own name, shown on its login screen, its chrome and its bills.
     #

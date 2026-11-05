@@ -248,6 +248,16 @@ print("\n-- Stock Check says where an item is kept")
 html = client.get("/stock-check/?code=G-001").get_data(as_text=True)
 ok("Kept on First Floor", "Kept on" in html and "First Floor" in html)
 
+print("\n-- another website cannot post a move with the sign-in cookie")
+login = app.test_client()
+with app.app_context():
+    lady = User(username="lax", full_name="Lax Check", role="manager")
+    lady.set_password("pw")
+    db.session.add(lady)
+    db.session.commit()
+cookie = " ".join(login.post("/login", data={"username": "lax", "password": "pw"}).headers.getlist("Set-Cookie"))
+ok("the session cookie is SameSite=Lax", "session=" in cookie and "SameSite=Lax" in cookie)
+
 print("\n-- a cashier can look, not move")
 cashier = app.test_client()
 with cashier.session_transaction() as s:
