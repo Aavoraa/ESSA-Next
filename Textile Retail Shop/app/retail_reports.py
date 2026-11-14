@@ -20,7 +20,7 @@ from collections import OrderedDict
 from datetime import date, datetime, timedelta
 
 from flask import current_app
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import selectinload
 
 # Everything this module needs is imported HERE, never inside a function. Inside
@@ -48,16 +48,28 @@ METHODS = ("cash", "card", "upi")
 class Ctx:
     """The period, the place, and any report-specific knob, in one object.
 
-    `b2b` narrows every bill query to customers registered for GST — the B2B
-    vertical is the same reports asked of those bills only, not a second set.
+    `segment` narrows every bill query to one side of GST's split: "b2b" is
+    customers registered for GST (a GSTIN on file), "b2c" is everybody else —
+    walk-ins and customers without one. The two verticals are the same reports
+    asked of those bills only, not a second set, and between them they hold
+    every bill exactly once. `b2b=True` is the older spelling of "b2b".
     """
 
     def __init__(self, start, end, company=None, location=None, counter=None,
-                 params=None, b2b=False):
+                 params=None, b2b=False, segment=None):
         self.start, self.end = start, end
         self.company, self.location, self.counter = company, location, counter
         self.params = params or {}
-        self.b2b = b2b
+        self.segment = segment or ("b2b" if b2b else None)
+        self.b2b = self.segment == "b2b"
+
+    def _segment(self, q):
+        if self.segment == "b2b":
+            return q.filter(Invoice.customer_id.in_(_registered_ids()))
+        if self.segment == "b2c":
+            return q.filter(or_(Invoice.customer_id.is_(None),
+                                ~Invoice.customer_id.in_(_registered_ids())))
+        return q
 
     def param(self, key, default, cast=int):
         try:
@@ -79,8 +91,7 @@ class Ctx:
                                  day_from(Invoice.invoice_date, self.start),
                                  day_to(Invoice.invoice_date, self.end))
         q = self._place(q, Invoice)
-        if self.b2b:
-            q = q.filter(Invoice.customer_id.in_(_registered_ids()))
+        q = self._segment(q)
         if options:
             q = q.options(*options)
         return q.order_by(Invoice.invoice_date, Invoice.id)
@@ -93,8 +104,7 @@ class Ctx:
                      day_from(Invoice.invoice_date, self.start),
                      day_to(Invoice.invoice_date, self.end)))
         q = self._place(q, Invoice)
-        if self.b2b:
-            q = q.filter(Invoice.customer_id.in_(_registered_ids()))
+        q = self._segment(q)
         return q.order_by(Invoice.invoice_date, Invoice.id, InvoiceItem.id)
 
     def credit_notes(self):
@@ -103,8 +113,7 @@ class Ctx:
              .filter(day_from(CreditNote.created_at, self.start),
                      day_to(CreditNote.created_at, self.end)))
         q = self._place(q, Invoice)
-        if self.b2b:
-            q = q.filter(Invoice.customer_id.in_(_registered_ids()))
+        q = self._segment(q)
         return q.order_by(CreditNote.created_at, CreditNote.id)
 
 
@@ -2014,7 +2023,7 @@ def _previous(ctx):
         end = ctx.start - timedelta(days=1)
         start = end - timedelta(days=days - 1)
     return Ctx(start, end, company=ctx.company, location=ctx.location, counter=ctx.counter,
-               params=ctx.params, b2b=ctx.b2b), start, end
+               params=ctx.params, segment=ctx.segment), start, end
 
 
 def _change(now, then):
@@ -2213,7 +2222,8 @@ PARAMS = {
 }
 
 # (key, label, run-or-unavailable, flags)
-# flags: dated (uses the period), places (honours company/branch/till), b2b
+# flags: dated (uses the period), places (honours company/branch/till),
+#        segment ("b2b" / "b2c" — see Ctx)
 GROUPS = [
     ("sales", "Sales Reports", [
         ("sales_report", "Sales Report", sales_report, {}),
@@ -2297,11 +2307,19 @@ GROUPS = [
         ("employee_advance", "Employee Advance Pending Report", employee_advance,
          {"places": False}),
     ]),
+    # GST's split, each side with the same four reports: B2B is customers with
+    # a GSTIN on file, B2C is walk-ins and everybody without one (Ctx.segment).
     ("b2b", "Reports - B2B Vertical", [
-        ("b2b_sales", "Sales Report", sales_invoice_wise, {"b2b": True}),
-        ("b2b_tax_column", "Sales Tax Report (Column wise)", tax_column, {"b2b": True}),
-        ("b2b_tax_row", "Sales Tax Report (Row wise)", tax_row, {"b2b": True}),
-        ("b2b_hsn", "Sales HSN Report", hsn_report, {"b2b": True}),
+        ("b2b_sales", "Sales Report", sales_invoice_wise, {"segment": "b2b"}),
+        ("b2b_tax_column", "Sales Tax Report (Column wise)", tax_column, {"segment": "b2b"}),
+        ("b2b_tax_row", "Sales Tax Report (Row wise)", tax_row, {"segment": "b2b"}),
+        ("b2b_hsn", "Sales HSN Report", hsn_report, {"segment": "b2b"}),
+    ]),
+    ("b2c", "Reports - B2C Vertical", [
+        ("b2c_sales", "Sales Report", sales_invoice_wise, {"segment": "b2c"}),
+        ("b2c_tax_column", "Sales Tax Report (Column wise)", tax_column, {"segment": "b2c"}),
+        ("b2c_tax_row", "Sales Tax Report (Row wise)", tax_row, {"segment": "b2c"}),
+        ("b2c_hsn", "Sales HSN Report", hsn_report, {"segment": "b2c"}),
     ]),
     ("customer", "Customer Reports", [
         ("credit_outstanding", "Credit Customer Outstanding Report", credit_outstanding, {}),
@@ -2350,7 +2368,8 @@ for _gkey, _glabel, _items in GROUPS:
     for _key, _label, _run, _flags in _items:
         spec = {"key": _key, "label": _label, "group": _gkey, "group_label": _glabel,
                 "dated": _flags.get("dated", True), "places": _flags.get("places", True),
-                "b2b": _flags.get("b2b", False), "params": PARAMS.get(_key, [])}
+                "segment": _flags.get("segment"), "b2b": _flags.get("segment") == "b2b",
+                "params": PARAMS.get(_key, [])}
         if isinstance(_run, dict):
             spec.update(_run)
             spec["run"] = None
@@ -2376,7 +2395,7 @@ def run(key, start, end, company=None, location=None, counter=None, params=None)
               company=company if places is True else None,
               location=location if places in (True, "location") else None,
               counter=counter if places is True else None,
-              params=params, b2b=spec["b2b"])
+              params=params, segment=spec["segment"])
     out = spec["run"](ctx)
     out.setdefault("totals", {})
     out.setdefault("note", "")

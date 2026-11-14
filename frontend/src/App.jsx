@@ -1,7 +1,7 @@
 import React, { useEffect, useLayoutEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { api, session, warehouse, setUnauthorizedHandler, swr, readCache } from './api.js'
 import { parseDictation, coerceSpoken, dictationTargets } from './voicefill.js'
-import Finance, { FIN_SCREENS, FIN_REPORT_KEYS } from './Finance.jsx'
+import Finance, { FIN_SCREENS, FIN_REPORT_KEYS, requestVoucher } from './Finance.jsx'
 import HR, { HR_SCREENS, HR_REPORTS } from './HR.jsx'
 import { Loading, useFrameLoading } from './Loader.jsx'
 
@@ -6793,8 +6793,11 @@ function Reports({ toast = () => {}, finance = false, hr = false }) {
               Store reports <span style={{ opacity: 0.6, fontWeight: 400 }}>· from the shop</span></div>
           )}
           {store.groups.map((g) => {
+            // the group's name counts too: the B2B and B2C verticals hold four
+            // reports each called plain "Sales Report" and so on, so "b2c" has
+            // to find them by the vertical they are in
             const list = store.reports.filter((r) => r.group === g.key
-              && (!rqn || r.label.toLowerCase().includes(rqn)))
+              && (!rqn || r.label.toLowerCase().includes(rqn) || g.name.toLowerCase().includes(rqn)))
             if (!list.length) return null
             return (
               <div key={'store:' + g.key}>
@@ -17158,6 +17161,7 @@ const ICONS = {
   cpu: <><rect width="16" height="16" x="4" y="4" rx="2" /><rect width="6" height="6" x="9" y="9" rx="1" /><path d="M15 2v2M15 20v2M2 15h2M2 9h2M20 15h2M20 9h2M9 2v2M9 20v2" /></>,
   logout: <><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><path d="m16 17 5-5-5-5M21 12H9" /></>,
   upload: <><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><path d="m17 8-5-5-5 5M12 3v12" /></>,
+  download: <><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><path d="m7 10 5 5 5-5M12 15V3" /></>,
   plus: <path d="M5 12h14M12 5v14" />,
   compass: <><circle cx="12" cy="12" r="10" /><path d="m16.24 7.76-1.8 5.41a2 2 0 0 1-1.27 1.27L7.76 16.24l1.8-5.41a2 2 0 0 1 1.27-1.27z" /></>,
   history: <><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5M12 7v5l3.5 2" /></>,
@@ -17527,6 +17531,91 @@ function NavRail({ ws, items, tab, go, online, foot, context, onOpenGroup, page,
         </div>
       )}
     </aside>
+  )
+}
+
+// ==========================================================================
+//  Keyboard shortcuts — the Tally set, for people who key all day
+//  ------------------------------------------------------------------------
+//  One table, read both by the handler in App and by the Shift+? panel, so
+//  the panel can never list a key that does nothing. `voucher` keys open a new
+//  voucher of that type on Voucher Entry; `go` keys open a screen; `act` keys
+//  press the matching button on whatever is in front (see pressAction).
+// ==========================================================================
+const SHORTCUTS = [
+  { group: 'Anywhere', keys: 'Ctrl + K', label: 'Jump to any screen' },
+  { group: 'Anywhere', keys: 'Shift + ?', label: 'Show these shortcuts' },
+  { group: 'Anywhere', keys: 'Esc', label: 'Close the dialog, or go back a screen' },
+  { group: 'Anywhere', keys: 'Alt + ←', label: 'Go back a screen' },
+  { group: 'On a screen', keys: 'Ctrl + S', label: 'Save', act: 'save', ctrl: 's' },
+  { group: 'On a screen', keys: 'Alt + N', label: 'New / Create', act: 'new', alt: 'n' },
+  { group: 'On a screen', keys: 'Ctrl + F', label: 'Search on this screen', act: 'search', ctrl: 'f' },
+  { group: 'Vouchers', keys: 'F4', label: 'Contra', voucher: 'Contra', fkey: 'F4' },
+  { group: 'Vouchers', keys: 'F5', label: 'Payment', voucher: 'Payment', fkey: 'F5' },
+  { group: 'Vouchers', keys: 'F6', label: 'Receipt', voucher: 'Receipt', fkey: 'F6' },
+  { group: 'Vouchers', keys: 'F7', label: 'Journal', voucher: 'Journal', fkey: 'F7' },
+  { group: 'Vouchers', keys: 'F8', label: 'Sales', voucher: 'Sales', fkey: 'F8' },
+  { group: 'Vouchers', keys: 'F9', label: 'Purchase', voucher: 'Purchase', fkey: 'F9' },
+  { group: 'Vouchers', keys: 'Ctrl + F8', label: 'Credit Note', voucher: 'Credit Note', fkey: 'F8', withCtrl: true },
+  { group: 'Vouchers', keys: 'Ctrl + F9', label: 'Debit Note', voucher: 'Debit Note', fkey: 'F9', withCtrl: true },
+  { group: 'Finance screens', keys: 'Alt + V', label: 'Voucher Entry', go: 'fin_vouchers', alt: 'v' },
+  { group: 'Finance screens', keys: 'Alt + L', label: 'Manage Ledger', go: 'fin_ledgers', alt: 'l' },
+  { group: 'Finance screens', keys: 'Alt + D', label: 'Daybook', go: 'fin_daybook', alt: 'd' },
+  { group: 'Finance screens', keys: 'Alt + T', label: 'Trial Balance', go: 'fin_trial', alt: 't' },
+  { group: 'Finance screens', keys: 'Alt + P', label: 'Profit & Loss', go: 'fin_pl', alt: 'p' },
+  { group: 'Finance screens', keys: 'Alt + B', label: 'Balance Sheet', go: 'fin_bs', alt: 'b' },
+]
+
+const isTyping = (el) => !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA'
+  || el.tagName === 'SELECT' || el.isContentEditable)
+
+// Press the Save / New / Search control on whatever is in front: the open
+// dialog if there is one, otherwise the screen. Found by what the button SAYS,
+// so every screen in the app answers without being told about shortcuts — and
+// never one in the header or the menu, which are not "this screen".
+const ACT_TEXT = { save: /^save\b/i, new: /^(new|create)\b/i, search: /^search\b/i }
+function pressAction(act) {
+  const dialog = [...document.querySelectorAll('.modal')].pop()
+  const scope = dialog || document
+  const shown = (el) => el.offsetParent !== null && !el.disabled
+    && !el.closest('.topbar, .navrail, .navside, .navdrawer, .ctxbar, .tabstrip')
+  if (act === 'search') {
+    const box = [...scope.querySelectorAll('input')].find((i) => shown(i)
+      && /search|name contains|enter ledger/i.test(i.placeholder || ''))
+    if (box) { box.focus(); box.select?.(); return true }
+  }
+  const btn = [...scope.querySelectorAll('button, a.btn')].find((b) => shown(b)
+    && ACT_TEXT[act].test((b.textContent || '').replace(/^[\s+]+/, '').trim()))
+  if (btn) { btn.click(); return true }
+  return false
+}
+
+function ShortcutHelp({ onClose, finance }) {
+  useEffect(() => {
+    const esc = (e) => { if (e.key === 'Escape') { e.stopPropagation(); onClose() } }
+    window.addEventListener('keydown', esc, true)
+    return () => window.removeEventListener('keydown', esc, true)
+  }, [onClose])
+  const rows = SHORTCUTS.filter((x) => finance || !(x.voucher || x.go))
+  const groups = [...new Set(rows.map((x) => x.group))]
+  return (
+    <div className="modal-back" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose() }}>
+      <div className="modal kbd-help" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
+        <div className="modal-head"><b>Keyboard shortcuts</b>
+          <button className="modal-x" onClick={onClose} aria-label="Close"><Icon name="x" size={16} /></button></div>
+        <div className="modal-body">
+          {groups.map((g) => (
+            <div key={g} className="kbd-group">
+              <h5>{g}</h5>
+              {rows.filter((x) => x.group === g).map((x) => (
+                <div key={x.keys} className="kbd-row"><span>{x.label}</span>
+                  <span className="kbd-keys">{x.keys.split(' + ').map((k) => <kbd key={k}>{k}</kbd>)}</span></div>
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -18697,6 +18786,54 @@ export default function App() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [])
+  // The rest of the shortcut table (SHORTCUTS). Which screens this account
+  // may open is only known further down, so it is read through a ref filled
+  // in there (shortcutNav) rather than closed over here.
+  const [helpOpen, setHelpOpen] = useState(false)
+  const shortcutNav = useRef({ canGo: () => false, go: () => {} })
+  useEffect(() => {
+    const onKey = (e) => {
+      const key = String(e.key || '')
+      const lower = key.toLowerCase()
+      const typing = isTyping(document.activeElement)
+      const nav = shortcutNav.current
+      if (key === '?' && !typing && !e.ctrlKey && !e.altKey) {
+        e.preventDefault(); setHelpOpen((o) => !o); return
+      }
+      // F4–F9: a new voucher of that type, from any screen and any field —
+      // the keys never type anything, which is why Tally can use them so.
+      const v = /^F\d$/.test(key) && !e.altKey && !e.shiftKey
+        && SHORTCUTS.find((x) => x.fkey === key && !!x.withCtrl === (e.ctrlKey || e.metaKey))
+      if (v) {
+        if (!nav.canGo('fin_vouchers')) return
+        e.preventDefault(); nav.go('fin_vouchers'); requestVoucher(v.voucher); return
+      }
+      if (e.altKey && !e.ctrlKey && !e.metaKey) {
+        const hit = SHORTCUTS.find((x) => x.alt === lower)
+        if (!hit) return
+        if (hit.go) { if (nav.canGo(hit.go)) { e.preventDefault(); nav.go(hit.go) } return }
+        if (hit.act) { e.preventDefault(); pressAction(hit.act) }
+        return
+      }
+      if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+        const hit = SHORTCUTS.find((x) => x.ctrl === lower)
+        if (!hit) return
+        // Ctrl+S always stops the browser's "save page" dialog; Ctrl+F only
+        // when this screen has a search of its own to go to
+        if (hit.act === 'save') { e.preventDefault(); pressAction('save'); return }
+        if (pressAction(hit.act)) e.preventDefault()
+        return
+      }
+      // Esc: a dialog, palette, menu or category page closes itself on Esc —
+      // only with none of those open does it go back a screen, as in Tally.
+      if (key === 'Escape' && !typing && !document.querySelector(
+        '.modal-back, .jump-back, .catpage, .navrail-fly, .navdrawer, .dropdown-menu.show')) {
+        goBackRef.current()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
   // `alive` — which tabs are mounted right now — is computed BELOW, beside
   // `modules`: deciding it needs the role and the grant map, and reading a
   // `const` above its declaration is a TDZ throw, not undefined. See the note on
@@ -18711,6 +18848,24 @@ export default function App() {
   // the two the warehouse picker should land them in afterwards.
   const [navOpen, setNavOpen] = useState(false)
   const [jumpOpen, setJumpOpen] = useState(false)
+  // The browser's offer to install ESSA as a desktop app — its own window and
+  // taskbar icon. Kept by main.jsx, which hears it before App mounts; the
+  // header's Install app button is shown only while the offer stands, so it
+  // goes away once ESSA is installed or when it is already running as the app.
+  const [canInstall, setCanInstall] = useState(() => !!window.__essaInstall)
+  useEffect(() => {
+    const sync = () => setCanInstall(!!window.__essaInstall)
+    window.addEventListener('essa:installable', sync)
+    return () => window.removeEventListener('essa:installable', sync)
+  }, [])
+  const installApp = async () => {
+    const offer = window.__essaInstall
+    if (!offer) return
+    offer.prompt()
+    try { await offer.userChoice } catch { /* dismissed */ }
+    window.__essaInstall = null
+    setCanInstall(false)
+  }
   const [whList, setWhList] = useState([])
   const [pickFor, setPickFor] = useState(null)
   const closeTab = (k) => {
@@ -19064,6 +19219,7 @@ export default function App() {
     if (!m) return false
     return modules.includes(m)
   }
+  shortcutNav.current = { canGo: availableHere, go: (k) => setTab(k) }
   //: The tabs actually mounted right now — the open keep-alive ones that belong
   //: here, plus the active screen whatever it is. The active one is always in
   //: the list, so it always renders; that is what lets a non-keep-alive screen
@@ -19230,8 +19386,13 @@ export default function App() {
             <small>{companyName} — multi-warehouse inventory &amp; retail supply chain</small></div>
         </div>
         <div className="spacer" />
+        {canInstall && (
+          <button className="th-ctl th-install" onClick={installApp}
+            title="Install ESSA as a desktop app — its own window, with an icon on the desktop and taskbar">
+            <Icon name="download" size={14} /><span className="ph">Install app</span></button>
+        )}
         <button className="th-ctl th-search" onClick={() => setJumpOpen(true)}
-          title="Jump to any screen (Ctrl + K)" aria-label="Jump to a screen">
+          title="Jump to any screen (Ctrl + K) · every shortcut: Shift + ?" aria-label="Jump to a screen">
           <Icon name="search" size={14} /><span className="ph">Search screens…</span><kbd>Ctrl K</kbd>
         </button>
         <NotificationBell onOpen={() => setNotifsOpen(true)} tick={notifTick} />
@@ -19394,6 +19555,8 @@ export default function App() {
       {navOpen && <NavSidebar drawer kind={navKind} context={navContext} items={navItems}
         tab={tab} go={setTab} online={!!status} foot={navFoot} engines={engines}
         onClose={() => setNavOpen(false)} />}
+      {helpOpen && <ShortcutHelp onClose={() => setHelpOpen(false)}
+        finance={availableHere('fin_vouchers')} />}
       {jumpOpen && <JumpPalette groups={jumpGroups} onGo={jumpTo}
         onClose={() => setJumpOpen(false)} />}
       {scanning && <ScanningOverlay url={scanning.url} name={scanning.name}

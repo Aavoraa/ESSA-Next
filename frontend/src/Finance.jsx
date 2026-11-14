@@ -548,6 +548,15 @@ function VoucherTable({ rows, onOpen, onCancel, showDayTotals }) {
   )
 }
 
+// F4–F9 from anywhere in the app (App's shortcut handler) open a new voucher of
+// that type here, the Tally way. Held outside React so a request made while
+// this screen is still being opened for it is waiting when it mounts.
+let pendingVoucher = null
+export function requestVoucher(vtype) {
+  pendingVoucher = vtype
+  window.dispatchEvent(new CustomEvent('essa:new-voucher'))
+}
+
 function VoucherEntry({ toast }) {
   const [o] = useFinOptions()
   const [ledgers, reloadLedgers] = useLedgers()
@@ -555,7 +564,20 @@ function VoucherEntry({ toast }) {
     date_from: todayIso(), date_to: todayIso() })
   const [rows, setRows] = useState(null)
   const [open, setOpen] = useState(null)
+  const [preset, setPreset] = useState({ vtype: null, n: 0 })
   const [newLedger, setNewLedger] = useState(false)
+  useEffect(() => {
+    const take = () => {
+      const vtype = pendingVoucher       // read now: the updater below runs later
+      if (!vtype) return
+      pendingVoucher = null
+      setPreset((p) => ({ vtype, n: p.n + 1 }))   // n remounts an open form
+      setOpen({})
+    }
+    take()
+    window.addEventListener('essa:new-voucher', take)
+    return () => window.removeEventListener('essa:new-voucher', take)
+  }, [])
   const set = (k) => (v) => setQ((p) => ({ ...p, [k]: v?.target ? v.target.value : v }))
   const load = useCallback(() => {
     setRows(null)
@@ -571,7 +593,9 @@ function VoucherEntry({ toast }) {
     <FinPage title="Voucher Entry" sub={rows ? `${rows.length} voucher${rows.length === 1 ? '' : 's'}` : ''}
       actions={<>
         <button className="btn" onClick={() => setNewLedger(true)}><Icon name="plus" size={14} /> New Ledger</button>
-        <button className="btn primary" onClick={() => setOpen({})}><Icon name="plus" size={14} /> New Voucher</button>
+        <button className="btn primary" onClick={() => { setPreset((p) => ({ vtype: null, n: p.n + 1 })); setOpen({}) }}
+          title="New voucher (Alt+N) — or F4 Contra, F5 Payment, F6 Receipt, F7 Journal, F8 Sales, F9 Purchase">
+          <Icon name="plus" size={14} /> New Voucher</button>
         <button className="btn success" disabled={!rows?.length} onClick={() => downloadCsv('vouchers', VCOLS, rows)}>
           <Icon name="spreadsheet" size={14} /> Export</button></>}>
       <div className="fin-toolbar">
@@ -591,7 +615,8 @@ function VoucherEntry({ toast }) {
       {rows === null ? <Loading>Reading the vouchers…</Loading> : rows.length === 0
         ? <Empty>No vouchers for these filters. Widen the dates, or press <b>New Voucher</b>.</Empty>
         : <VoucherTable rows={rows} onOpen={setOpen} onCancel={cancel} />}
-      {open && <VoucherForm init={open.id ? open : null} toast={toast} onClose={() => setOpen(null)}
+      {open && <VoucherForm key={open.id || 'new' + preset.n} init={open.id ? open : null}
+        presetType={open.id ? null : preset.vtype} toast={toast} onClose={() => setOpen(null)}
         onSaved={() => { setOpen(null); load() }} />}
       {newLedger && <LedgerForm toast={toast} onClose={() => setNewLedger(false)}
         onSaved={() => { setNewLedger(false); reloadLedgers() }} />}

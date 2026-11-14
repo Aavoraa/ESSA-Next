@@ -158,7 +158,8 @@
     <div class="table-responsive">
       <table class="table table-sm mb-0 align-middle">
         <thead><tr><th>Till</th><th style="width:240px">On floor</th>
-          <th>Its bills read</th><th style="width:110px"></th></tr></thead>
+          <th>Its bills read</th><th style="width:110px"></th>
+          <th style="width:170px" title="Billing raises bills only; Payment takes money at Settlement only; Both does the two">Job</th></tr></thead>
         <tbody>
           {% for t in loc.counters if t.active %}
           <tr>
@@ -184,9 +185,21 @@
               {% else %}<button class="btn btn-sm btn-outline-primary">
               <i class="bi bi-check-lg"></i> Map</button>{% endif %}</td>
             </form>
+            {# Its own form: what a till is FOR is the shop's to set even on a
+               till the warehouse mirrors. Saves as soon as it is changed. #}
+            <td>
+              <form method="post" action="{{ url_for('stores.set_counter_job', cid=t.id) }}">
+                <select class="form-select form-select-sm" name="job" aria-label="Job of {{ t.name }}"
+                        onchange="this.form.submit()">
+                  <option value="both" {% if t.job == 'both' %}selected{% endif %}>Billing &amp; Payment</option>
+                  <option value="billing" {% if t.job == 'billing' %}selected{% endif %}>Billing only</option>
+                  <option value="payment" {% if t.job == 'payment' %}selected{% endif %}>Payment only</option>
+                </select>
+              </form>
+            </td>
           </tr>
           {% else %}
-          <tr><td colspan="4" class="text-center text-muted p-3">No tills here.</td></tr>
+          <tr><td colspan="5" class="text-center text-muted p-3">No tills here.</td></tr>
           {% endfor %}
         </tbody>
       </table>

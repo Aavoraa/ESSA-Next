@@ -376,9 +376,31 @@ class Counter(db.Model):
     #: the "Counter 1" this shop creates for a branch the warehouse has not
     #: given a till of its own — see app/places.sync_places.
     wh_id = db.Column(db.Integer, index=True)
+    #: What this till is FOR: `billing` raises bills and never takes money,
+    #: `payment` takes money at Settlement and never raises a bill, `both` does
+    #: the two as every till did before this existed. A busy floor bills at one
+    #: desk and pays at another, so the queue for the cash drawer does not hold
+    #: up the next customer's bill. Blank reads as both (see `job`), so a till
+    #: nobody has set up keeps working. Set on Floors & Tills; the shop's own,
+    #: even for a till the warehouse mirrors — the warehouse has no word for it.
+    role = db.Column(db.String(16), default="both")
     active = db.Column(db.Boolean, default=True, index=True)
     __table_args__ = (db.UniqueConstraint("location_id", "name",
                                           name="uq_counter_location_name"),)
+
+    JOBS = ("both", "billing", "payment")
+
+    @property
+    def job(self):
+        return self.role if self.role in self.JOBS else "both"
+
+    @property
+    def bills(self):
+        return self.job != "payment"
+
+    @property
+    def takes_payment(self):
+        return self.job != "billing"
 
 
 class BillSequence(db.Model):

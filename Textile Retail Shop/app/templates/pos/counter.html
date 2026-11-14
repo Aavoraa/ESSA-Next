@@ -106,9 +106,22 @@
         <span class="pos-total fs-3 fw-bold" id="sideTotal">₹0.00</span>
       </div>
       <div id="goWarn" class="small d-none" style="color:#BE123C"></div>
+      {% if till_job == 'payment' %}
+      {# A Payment till takes money and raises no bills (Floors & Tills). The
+         page still opens here because the till picker above is how somebody
+         at the wrong till moves to the right one. #}
+      <div class="alert alert-warning small mb-1 mt-1 p-2">
+        <b>{{ chosen_counter.name }}</b> is a Payment till — it takes payment and raises no bills.
+        Pick a Billing till above, or
+        <a href="{{ url_for('pos.settle') }}">go to Settlement</a>.</div>
+      <button id="goSettle" class="btn btn-brand w-100 mt-1 d-none" disabled></button>
+      {% else %}
       <button id="goSettle" class="btn btn-brand w-100 mt-1" disabled
-              title="Saves the bill, prints the delivery copy, then opens Settlement">
+              title="{{ 'Saves the bill and prints the delivery copy; payment is taken at a Payment till' if till_job == 'billing' else 'Saves the bill, prints the delivery copy, then opens Settlement' }}">
         <i class="bi bi-printer"></i> Bill &amp; print delivery copy</button>
+      {% if till_job == 'billing' %}<div class="small text-muted mt-1">
+        <i class="bi bi-info-circle"></i> Billing till — the customer pays at a Payment till.</div>{% endif %}
+      {% endif %}
       <button id="clearBill" class="btn btn-link btn-sm w-100 text-decoration-none text-muted p-0 mt-1">Clear bill</button>
     </div>
   </aside>
@@ -349,6 +362,8 @@ const STAFF = [
   {% for u in staff %}{id: {{ u.id }}, code: {{ u.staff_code | tojson }}, name: {{ u.full_name | tojson }}, username: {{ (u.username or '') | tojson }}},
   {% endfor %}];
 const EXCHANGE = {{ exchange | tojson }};
+// billing | payment | both — what this till is for (Floors & Tills)
+const TILL_JOB = {{ till_job | tojson }};
 
 const $ = (id) => document.getElementById(id);
 function fmt(n){ return '₹' + Number(n || 0).toFixed(2); }
@@ -1233,7 +1248,8 @@ $('goSettle').onclick = async () => {
       alert('Put in the bag — free with this bill:\n\n'
         + j.free_items.map((x) => `${x.qty} × ${x.name} (${x.sku})\n   under ${x.scheme}`).join('\n'));
     }
-    const qs = new URLSearchParams({copy: 'delivery', then: 'settle'});
+    // A Billing till goes back to a fresh bill; the customer pays elsewhere.
+    const qs = new URLSearchParams({copy: 'delivery', then: TILL_JOB === 'billing' ? 'counter' : 'settle'});
     if (creditNote) qs.set('credit_note', creditNote.number);
     window.location = `${SHOP_ROOT}/pos/invoice/${j.invoice_id}/print?${qs}`;
   } catch (err){

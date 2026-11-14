@@ -69,6 +69,25 @@ if (framed) {
     setTimeout(() => { queued = false; linkLabels() }, 60)
   }).observe(document.getElementById('root'), { childList: true, subtree: true })
 
+  // The desktop app. The service worker is what lets Chrome and Edge install
+  // ESSA as its own window (public/sw.js — it caches nothing). Their install
+  // offer is kept here for the header's "Install app" button to use, since the
+  // browser fires it once, early, and before App has mounted.
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/sw.js').catch(() => { /* still works as a web page */ })
+    })
+  }
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault()
+    window.__essaInstall = e
+    window.dispatchEvent(new Event('essa:installable'))
+  })
+  window.addEventListener('appinstalled', () => {
+    window.__essaInstall = null
+    window.dispatchEvent(new Event('essa:installable'))
+  })
+
   ReactDOM.createRoot(document.getElementById('root')).render(
     <React.StrictMode>
       <App />

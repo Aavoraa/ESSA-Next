@@ -6,6 +6,18 @@
 <div class="pos-screen" id="posScreen">
 
   <aside class="pos-left">
+    {# Scan the QR on the delivery copy the customer hands over — or type the
+       number — and that bill opens, however far down the list it is. #}
+    <form class="card scanbill" method="get" action="{{ url_for('pos.settle') }}">
+      <div class="input-group input-group-sm p-2">
+        <span class="input-group-text"><i class="bi bi-upc-scan"></i></span>
+        <input id="billScan" name="bill" class="form-control font-monospace" autocomplete="off"
+               placeholder="Scan the bill QR, or type its number"
+               aria-label="Scan or type a bill number"
+               {% if not inv or settled_already or inv.is_cancelled %}autofocus{% endif %}>
+        <button class="btn btn-brand" type="submit">Open</button>
+      </div>
+    </form>
     <div class="card pend">
       <div class="px-3 py-2 border-bottom d-flex justify-content-between align-items-center">
         <span class="fw-bold"><i class="bi bi-hourglass-split"></i> Waiting for payment</span>
@@ -84,8 +96,29 @@
     </div>
     {% else %}
     <div class="pay-body px-3 py-2">
+      {% if together %}
+      {# The same customer's other unpaid bills. Ticked ones join this payment:
+         one amount due, one set of tenders, every bill settled (pos.settle_many). #}
+      <div class="together mb-2">
+        <div class="d-flex justify-content-between align-items-center mb-1">
+          <span class="fw-semibold small"><i class="bi bi-collection"></i>
+            {{ inv.customer.name }} has {{ together|length }} more bill{{ '' if together|length == 1 else 's' }} waiting — settle together?</span>
+          <button type="button" class="btn btn-link btn-sm p-0" id="togAll">Tick all</button>
+        </div>
+        <div class="tog-list">
+          {% for b in together %}
+          <label class="tog-row">
+            <input type="checkbox" class="tog" value="{{ b.id }}" data-due="{{ b.due }}">
+            <span class="font-monospace">{{ b.number }}</span>
+            <span class="text-muted small">{{ b.date }}</span>
+            <span class="ms-auto fw-semibold">{{ b.due|inr }}</span>
+          </label>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
       <div class="readouts">
-        <div class="ro"><div class="ro-k">Amount due</div><div class="ro-v" id="rDue">{{ due|inr }}</div></div>
+        <div class="ro"><div class="ro-k" id="rDueLabel">Amount due</div><div class="ro-v" id="rDue">{{ due|inr }}</div></div>
         <div class="ro"><div class="ro-k">Amount received</div><div class="ro-v" id="rReceived">₹0.00</div></div>
         <div class="ro"><div class="ro-k" id="rBalLabel">Balance to pay</div><div class="ro-v" id="rBalance">₹0.00</div></div>
         <div class="ro ro-change"><div class="ro-k">Change to give back</div><div class="ro-v" id="rChange">₹0.00</div></div>
@@ -135,6 +168,12 @@
   .pos-screen { display:grid; grid-template-columns: 380px minmax(0,1fr); gap:12px; height: calc(100vh - 150px); }
   .pos-left { display:flex; flex-direction:column; gap:12px; min-height:0; }
   .pos-left .card, .pos-pay { margin:0; }
+  .scanbill { flex: 0 0 auto; }
+  .together { border:1px solid #C1DDD2; background:#F5FBF7; border-radius:8px; padding:8px 10px; }
+  .tog-list { max-height: 132px; overflow:auto; }
+  .tog-row { display:flex; align-items:center; gap:8px; padding:4px 2px; margin:0; cursor:pointer;
+             border-top:1px dashed #DCE5DF; font-size:.9rem; }
+  .tog-row:first-child { border-top:none; }
   .pend { display:flex; flex-direction:column; min-height:0; flex: 0 1 38%; }
   .pend-list { overflow:auto; min-height:0; }
   .sum { display:flex; flex-direction:column; min-height:0; flex: 1 1 62%; }
@@ -165,6 +204,20 @@
 <script>
 const $ = (id) => document.getElementById(id);
 function fmt(n){ return '₹' + Number(n || 0).toFixed(2); }
+
+// A scanner types like a keyboard. If nothing is focused when the QR on a
+// delivery copy is scanned, its characters are caught here and sent to the
+// bill box rather than lost — and its closing Enter opens the bill.
+document.addEventListener('keydown', (e) => {
+  const box = $('billScan');
+  const t = e.target;
+  if (!box || e.ctrlKey || e.altKey || e.metaKey) return;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+  if (e.key.length !== 1) return;
+  e.preventDefault();
+  box.focus();
+  box.value += e.key;
+});
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
 const SCREEN = $('posScreen');
@@ -179,7 +232,28 @@ fitScreen();
 
 {% if inv and not inv.is_cancelled and not settled_already %}
 const BILL_ID = {{ inv.id }};
-const DUE = r2({{ due }});
+// The amount due: this bill, plus the customer's other bills ticked to settle
+// with it. `let`, because ticking one changes it.
+const THIS_DUE = r2({{ due }});
+let DUE = THIS_DUE;
+const together = () => [...document.querySelectorAll('.tog:checked')];
+function retotal(){
+  const extra = together();
+  DUE = r2(THIS_DUE + extra.reduce((a, el) => a + Number(el.dataset.due), 0));
+  $('rDue').innerText = fmt(DUE);
+  $('rDueLabel').innerText = extra.length ? `Amount due · ${extra.length + 1} bills` : 'Amount due';
+  $('billBtn').innerHTML = extra.length
+    ? `<i class="bi bi-check-circle"></i> Settle ${extra.length + 1} bills &amp; print`
+    : '<i class="bi bi-check-circle"></i> Settle &amp; print';
+  paint();
+}
+document.querySelectorAll('.tog').forEach((el) => el.onchange = retotal);
+if ($('togAll')) $('togAll').onclick = () => {
+  const boxes = [...document.querySelectorAll('.tog')];
+  const on = !boxes.every((b) => b.checked);
+  boxes.forEach((b) => { b.checked = on; });
+  retotal();
+};
 const CUSTOMER_ID = {{ inv.customer_id or 'null' }};
 const EXCHANGE = {{ exchange | tojson }};
 const METHODS = ['card', 'upi', 'credit_note', 'advance', 'gift_voucher'];
@@ -296,14 +370,21 @@ $('billBtn').onclick = async () => {
   const f = figures();
   const payments = f.other.map((r) => ({method: r.method, amount: r.amount, tendered: r.amount, reference: r.reference || null}));
   if (f.cashIn > 0) payments.unshift({method: 'cash', amount: f.cashApplied, tendered: f.cashIn, reference: null});
+  const extra = together().map((el) => Number(el.value));
   try {
-    const j = await (await fetch(`${SHOP_ROOT}/pos/settle/${BILL_ID}`, {
+    // One bill, or this bill with the customer's others ticked beside it.
+    const j = await (await fetch(extra.length ? `${SHOP_ROOT}/pos/settle-many` : `${SHOP_ROOT}/pos/settle/${BILL_ID}`, {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({payments: payments.filter((p) => p.amount > 0)}),
+      body: JSON.stringify(extra.length
+        ? {invoice_ids: [BILL_ID, ...extra], payments: payments.filter((p) => p.amount > 0)}
+        : {payments: payments.filter((p) => p.amount > 0)}),
     })).json();
     if (j.error){ alert('Error: ' + j.error); btn.disabled = false; return; }
-    // The customer's copy, with what was received and the change on screen.
-    window.location = `${SHOP_ROOT}/pos/invoice/${BILL_ID}/print?copy=customer&fresh=1`;
+    // The customer's copy, with what was received and the change on screen —
+    // for several bills, each one's copy in turn (?next=).
+    const ids = extra.length ? j.invoice_ids : [BILL_ID];
+    const next = ids.slice(1).join(',');
+    window.location = `${SHOP_ROOT}/pos/invoice/${ids[0]}/print?copy=customer&fresh=1` + (next ? `&next=${next}` : '');
   } catch (err){
     alert('Settlement failed: ' + err);
     btn.disabled = false;

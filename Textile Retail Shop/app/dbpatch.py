@@ -121,6 +121,8 @@ COLUMNS = [
     # well as `counters` because a shop that ran an earlier build already has
     # `floors` without them, and create_all never revisits a table it has made.
     ("counters", "wh_id", "INTEGER"),
+    # Billing / payment / both — models.Counter.role. Blank reads as both.
+    ("counters", "role", "VARCHAR(16)"),
     # Which storey an item is held on — where you go to find it. See
     # models.Product.floor_id; it is a place, not a quantity.
     ("products", "floor_id", "INTEGER"),
