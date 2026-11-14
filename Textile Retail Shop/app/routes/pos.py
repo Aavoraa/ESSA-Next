@@ -103,6 +103,19 @@ def _chosen():
     return places.resolve(*(session.get(k) for k in POST_KEYS))
 
 
+def _till_job():
+    """What the till this session works at is for — models.Counter.job.
+
+    A session that has not picked a till yet gets "both", so nothing changes
+    for a shop that has never set a job anywhere."""
+    till = _chosen()[3]
+    return till.job if till is not None else "both"
+
+
+#: Said by every refusal below, so a till set up wrongly says how to fix it.
+JOB_HELP = "Change the till at the top of the Billing Counter, or its job on Floors & Tills."
+
+
 def _place():
     """Where this till is, in the shape the promotion engine reads.
 
@@ -230,7 +243,11 @@ def counter():
     # till was most of its load time.
     staff = User.query.filter(User.active.is_(True)).order_by(User.full_name).all()
     company, location, storey, till = _chosen()
+    # A Payment till still opens this page — the till picker lives here, and it
+    # is how somebody at the wrong till moves to the right one — but it shows
+    # why it cannot bill instead of a Bill button (counter.html).
     return render_template("pos/counter.html",
+                           till_job=till.job if till is not None else "both",
                            staff=staff,
                            places=places.picker_options(),
                            chosen_company=company, chosen_location=location,
@@ -278,6 +295,25 @@ def settle():
     `?id=` naming the bill it has just raised (and `?credit_note=` when it is an
     exchange). Opened from the menu, it picks the newest bill waiting.
     """
+    if _till_job() == "billing":
+        # A Billing till raises the bill and hands the customer on; the money
+        # is taken at a Payment till. Sent back to its own work, saying why.
+        flash("This is a Billing till — payment is taken at a Payment till. "
+              + JOB_HELP, "warning")
+        return redirect(url_for("pos.counter"))
+    # ?bill= — a scan of the QR on the delivery copy (or the number typed in).
+    # Opens that bill whatever its age: the list below stops at the newest 60,
+    # and the customer at the desk is holding the paper, not scrolling.
+    code = (request.args.get("bill") or "").strip()
+    if code:
+        found = (Invoice.query.filter_by(invoice_number=code).first()
+                 # scanners and people both drop the case of a printed number
+                 or Invoice.query.filter(Invoice.invoice_number.ilike(code)).first())
+        if found is None:
+            flash(f"No bill numbered “{code}”. Scan the QR on the delivery copy, "
+                  "or type the number as printed.", "warning")
+            return redirect(url_for("pos.settle"))
+        return redirect(url_for("pos.settle", id=found.id))
     pending = (Invoice.query.filter(Invoice.payment_status == "pending")
                .order_by(Invoice.id.desc()).limit(60).all())
     iid = request.args.get("id", type=int)
@@ -298,6 +334,11 @@ def settle():
         rcpt=_receipt(inv) if inv is not None else None,
         scheme_awards=scheme_awards, scheme_off=scheme_off,
         due=round((inv.total or 0) - scheme_off, 2) if inv is not None else 0,
+        # the same customer's other unpaid bills, to settle in one payment
+        together=([{"id": b.id, "number": b.invoice_number, "due": _due(b),
+                    "date": b.invoice_date.strftime("%d-%m %H:%M") if b.invoice_date else ""}
+                   for b in _waiting_for(inv)]
+                  if inv is not None and not settled_already and not inv.is_cancelled else []),
         exchange=_exchange_from(request.args.get("credit_note")))
 
 
@@ -514,6 +555,10 @@ def checkout():
             items = items_json or []
         if not items:
             return jsonify({"error": "Cart is empty"}), 400
+        job = _till_job()
+        if job == "payment":
+            return jsonify({"error": "This is a Payment till — bills are raised at a "
+                                     "Billing till. " + JOB_HELP}), 400
 
         customer_id = data.get("customer_id") or None
         customer_id = int(customer_id) if customer_id else None
@@ -524,6 +569,10 @@ def checkout():
         # afterwards at Settlement (`settle_bill`). Without it the sale is billed
         # and paid in one go, which is how Floor Sales and older callers work.
         settle_later = bool(data.get("settle_later"))
+        if job == "billing" and not settle_later:
+            # whatever the caller asked, a Billing till never takes the money
+            return jsonify({"error": "This is a Billing till — it raises the bill and "
+                                     "payment is taken at a Payment till. " + JOB_HELP}), 400
         if settle_later:
             payments, payment_method = None, "pending"
         else:
@@ -952,11 +1001,153 @@ def _sale_json(inv, issued):
                 for l in inv.items if l.promo_role == "reward"]}
 
 
+def _next_print(rest):
+    """?next=12,13 — several bills settled in one payment print their customer
+    copies one after another: this one, then 12 (carrying 13), then 13."""
+    ids = [x for x in (rest or "").split(",") if x.strip().isdigit()]
+    if not ids:
+        return None
+    return url_for("pos.print_invoice", iid=int(ids[0]), copy="customer", fresh=1,
+                   next=",".join(ids[1:]) or None)
+
+
+def _due(inv):
+    """What `inv` will ask for when it is paid: its total less the On
+    Settlement schemes _take_payment will take off it then."""
+    try:
+        off = schemes.settlement_discount(schemes.settlement_awards(inv), inv.total)
+    except Exception:                                # noqa: BLE001
+        off = 0.0
+    return round((inv.total or 0) - off, 2)
+
+
+def _waiting_for(inv):
+    """The customer's other bills still waiting for payment, oldest first —
+    the ones Settlement offers to take together with `inv`. None for a
+    walk-in: with no customer there is nothing to say two bills are one
+    person's."""
+    if inv is None or not inv.customer_id:
+        return []
+    return (Invoice.query.filter(Invoice.customer_id == inv.customer_id,
+                                 Invoice.payment_status == "pending",
+                                 Invoice.id != inv.id, Invoice.live())
+            .order_by(Invoice.id).limit(30).all())
+
+
+def _split_payments(payments, dues):
+    """Share one customer's payment across their bills, oldest first.
+
+    Card, UPI and the vouchers are spent first and cash last, so any change
+    comes out of the last bill's cash, the way the drawer actually saw it.
+    Returns one tender list per bill; the caller has already checked that the
+    payment and the bills come to the same amount."""
+    queue = sorted((dict(p) for p in payments), key=lambda p: p["method"] == "cash")
+    change = round(sum(p["tendered"] - p["amount"] for p in queue if p["method"] == "cash"), 2)
+    out = []
+    for need in dues:
+        mine = []
+        while need > SETTLE_TOLERANCE and queue:
+            head = queue[0]
+            piece = round(min(need, head["amount"]), 2)
+            mine.append({"method": head["method"], "amount": piece, "tendered": piece,
+                         "reference": head["reference"]})
+            head["amount"] = round(head["amount"] - piece, 2)
+            need = round(need - piece, 2)
+            if head["amount"] <= SETTLE_TOLERANCE:
+                queue.pop(0)
+        out.append(mine)
+    if change > 0:
+        for mine in reversed(out):
+            cash = [p for p in mine if p["method"] == "cash"]
+            if cash:
+                cash[-1]["tendered"] = round(cash[-1]["tendered"] + change, 2)
+                break
+    return out
+
+
+@pos_bp.route("/settle-many", methods=["POST"])
+@login_required
+def settle_many():
+    """One payment for several of ONE customer's bills.
+
+    Each bill is still settled by _take_payment — its own schemes, vouchers,
+    loyalty and coupons — with its share of the money (_split_payments). All
+    of them in one transaction: if any is refused, none is paid, so a customer
+    is never left half-settled."""
+    if _till_job() == "billing":
+        return jsonify({"error": "This is a Billing till — payment is taken at a "
+                                 "Payment till. " + JOB_HELP}), 400
+    data = request.get_json(silent=True) or {}
+    ids = []
+    for raw in data.get("invoice_ids") or []:
+        try:
+            if int(raw) not in ids:
+                ids.append(int(raw))
+        except (TypeError, ValueError):
+            return jsonify({"error": "invoice_ids must be bill ids"}), 400
+    if len(ids) < 2:
+        return jsonify({"error": "Choose at least two bills to settle together"}), 400
+    bills = Invoice.query.filter(Invoice.id.in_(ids)).order_by(Invoice.id).all()
+    if len(bills) != len(ids):
+        return jsonify({"error": "One of those bills no longer exists"}), 400
+    customers = {b.customer_id for b in bills}
+    if None in customers or len(customers) != 1:
+        return jsonify({"error": "Bills are settled together only for one named "
+                                 "customer — these are not all the same customer's"}), 400
+    for b in bills:
+        if b.is_cancelled:
+            return jsonify({"error": f"{b.invoice_number} was cancelled."}), 400
+        if (b.payment_status or "") != "pending":
+            return jsonify({"error": f"{b.invoice_number} is already settled."}), 400
+    if "payments" not in data:
+        return jsonify({"error": "no payment was entered"}), 400
+    try:
+        payments, _method = parse_payments(data)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    if payments is None:
+        return jsonify({"error": "Enter the payment amounts"}), 400
+
+    dues = [_due(b) for b in bills]
+    owed = round(sum(dues), 2)
+    paid = round(sum(p["amount"] for p in payments), 2)
+    if abs(paid - owed) > SETTLE_TOLERANCE:
+        short = round(owed - paid, 2)
+        return jsonify({"error": (f"Payment does not settle the {len(bills)} bills — "
+                                  f"₹{abs(short):.2f} {'short' if short > 0 else 'over'}. "
+                                  f"Bills ₹{owed:.2f}, entered ₹{paid:.2f}."),
+                        "total": owed, "settled": paid, "balance": short}), 400
+    shares = _split_payments(payments, dues)
+    results = []
+    try:
+        for b, share in zip(bills, shares):
+            # a bill its schemes took to nothing has no share; it settles whole
+            refused, issued = _take_payment(b, share or None, "cash")
+            if refused is not None:
+                db.session.rollback()
+                body, status = refused
+                j = body.get_json() or {}
+                j["error"] = f"{b.invoice_number}: {j.get('error', 'refused')}"
+                return jsonify(j), status
+            db.session.flush()            # the next bill's voucher check sees this one
+            results.append(_sale_json(b, issued))
+        db.session.commit()
+    except Exception as e:                           # noqa: BLE001
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"success": True, "bills": results,
+                    "invoice_ids": [b.id for b in bills], "total": owed,
+                    "change": round(sum(r.get("change") or 0 for r in results), 2)})
+
+
 @pos_bp.route("/settle/<int:iid>", methods=["POST"])
 @login_required
 def settle_bill(iid):
     """Take the money for a bill the counter has already raised."""
     inv = Invoice.query.get_or_404(iid)
+    if _till_job() == "billing":
+        return jsonify({"error": "This is a Billing till — payment is taken at a "
+                                 "Payment till. " + JOB_HELP}), 400
     if inv.is_cancelled:
         return jsonify({"error": f"{inv.invoice_number} was cancelled."}), 400
     if (inv.payment_status or "") != "pending":
@@ -1156,11 +1347,16 @@ def _invoice_page(inv, print_view):
         # Neither: a reprint, both copies.
         only_copy=(request.args.get("copy") if request.args.get("copy") in
                    ("delivery", "customer") else None),
-        # ?then=settle — once the delivery copy has printed, on to Settlement
+        # ?then=settle — once the delivery copy has printed, on to Settlement;
+        # ?then=counter — a Billing till, back to a fresh bill (it takes no money)
         then_url=(url_for("pos.settle", id=inv.id,
                           credit_note=request.args.get("credit_note") or None)
-                  if request.args.get("then") == "settle" else None),
+                  if request.args.get("then") == "settle"
+                  else url_for("pos.counter") if request.args.get("then") == "counter"
+                  else _next_print(request.args.get("next"))),
         back_url=_invoice_back_url(inv, print_view),
+        # a Billing till hands the customer on; it is not offered Settlement
+        till_takes_payment=_till_job() != "billing",
         cancel_blocked=cancellation.why_not(inv, current_user),
         coupons_issued=Coupon.query.filter_by(issued_invoice_id=inv.id).all(),
         feedback_link=_feedback_link(inv) if not inv.is_cancelled else None)

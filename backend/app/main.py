@@ -913,6 +913,29 @@ if os.path.isdir(FRONTEND_DIST):
         return FileResponse(os.path.join(FRONTEND_DIST, "index.html"),
                             headers={"Cache-Control": "no-cache"})
 
+    #: What makes the app installable as a desktop app (frontend/public). One
+    #: route per file, never "/{name}": a pattern at the root would stand in
+    #: front of every one-segment route registered after it — /m among them.
+    _APP_FILES = {"manifest.webmanifest": "application/manifest+json",
+                  "sw.js": "text/javascript", "icon-192.png": "image/png",
+                  "icon-512.png": "image/png"}
+
+    def _app_file_route(fname, media):
+        def serve():
+            path = os.path.join(FRONTEND_DIST, fname)
+            if not os.path.isfile(path):
+                raise HTTPException(404)
+            # the service worker and manifest are re-read on every start, so a
+            # new build reaches an installed app without reinstalling it
+            fresh = fname in ("sw.js", "manifest.webmanifest")
+            return FileResponse(path, media_type=media, headers={
+                "Cache-Control": "no-cache" if fresh else "public, max-age=86400"})
+        app.add_api_route("/" + fname, serve, methods=["GET"], include_in_schema=False,
+                          name="app_file_" + fname.replace(".", "_").replace("-", "_"))
+
+    for _fname, _media in _APP_FILES.items():
+        _app_file_route(_fname, _media)
+
 
 # ---- applying the schema on a deployment that skips it at start ----
 @app.post("/api/admin/boot")

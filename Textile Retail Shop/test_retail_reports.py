@@ -159,10 +159,10 @@ with app.app_context():
     cat = rr.catalogue()
     # …and the CRM's ten after Customer Reports (app/routes/crm_*.py), and the six
     # comparison reports after Analysis
-    check("thirteen groups", len(cat), 13)
-    check("eighty-six reports", sum(len(g["reports"]) for g in cat), 86)
+    check("fourteen groups", len(cat), 14)
+    check("ninety reports", sum(len(g["reports"]) for g in cat), 90)
     check("group sizes, in menu order",
-          [len(g["reports"]) for g in cat], [17, 4, 6, 8, 2, 9, 6, 4, 4, 14, 10, 1, 1])
+          [len(g["reports"]) for g in cat], [17, 4, 6, 8, 2, 9, 6, 4, 4, 4, 14, 10, 1, 1])
     unavailable = [r["key"] for g in cat for r in g["reports"] if r["unavailable"]]
     check("only the stock marker is honest about having nothing recorded",
           unavailable, ["stock_marker"])
@@ -230,6 +230,16 @@ print("\n-- the B2B vertical is only registered customers")
 check("B2B sales: the trader's bill alone", [r[0] for r in results["b2b_sales"]["rows"]],
       ["TG26-002"])
 check("B2B HSN: the saree alone", [r[0] for r in results["b2b_hsn"]["rows"]], ["5007"])
+
+print("\n-- the B2C vertical is everybody else, and the two add up")
+b2c_bills = [r[0] for r in results["b2c_sales"]["rows"]]
+ok("B2C sales: never the registered trader's bill", "TG26-002" not in b2c_bills, str(b2c_bills))
+check("B2B + B2C bills = every bill",
+      len(results["b2b_sales"]["rows"]) + len(b2c_bills), len(results["sales_invoice_wise"]["rows"]))
+check("B2B + B2C column-wise tax = all of it",
+      total("b2b_tax_column", "Bills") + total("b2c_tax_column", "Bills"), total("tax_column", "Bills"))
+check("B2B + B2C HSN taxable = the HSN report's",
+      round(total("b2b_hsn", "Taxable") + total("b2c_hsn", "Taxable"), 2), round(total("hsn", "Taxable"), 2))
 
 print("\n-- people, discount and margin")
 check("salesman wise: returns come off the seller",

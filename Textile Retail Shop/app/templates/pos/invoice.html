@@ -15,7 +15,7 @@
     <i class="bi bi-printer"></i> Print (2 copies)</button>
   {% endif %}
   {# A bill raised and not yet paid: its next stop is Settlement. #}
-  {% if (inv.payment_status or '') == 'pending' and not inv.is_cancelled %}
+  {% if (inv.payment_status or '') == 'pending' and not inv.is_cancelled and till_takes_payment %}
   <a href="{{ then_url or url_for('pos.settle', id=inv.id) }}" class="btn btn-warning btn-sm">
     <i class="bi bi-cash-coin"></i> Go to settlement</a>
   {% endif %}

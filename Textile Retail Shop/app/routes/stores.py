@@ -247,6 +247,30 @@ def assign_counter(cid):
     return redirect(url_for("stores.index"))
 
 
+JOB_TEXT = {"both": "bills and takes payment",
+            "billing": "only raises bills — payment is taken at a Payment till",
+            "payment": "only takes payment at Settlement — it raises no bills"}
+
+
+@stores_bp.route("/counters/<int:cid>/job", methods=["POST"])
+@login_required
+@role_required("admin", "manager")
+def set_counter_job(cid):
+    """Billing, Payment or Both — what this till is for (models.Counter.role).
+
+    Allowed on a till the warehouse mirrors too: the warehouse decides where a
+    till stands, but how the shop splits its queue is the shop's call."""
+    till = Counter.query.get_or_404(cid)
+    job = (request.form.get("job") or "both").strip().lower()
+    if job not in Counter.JOBS:
+        flash("Choose Billing, Payment or Both.", "danger")
+        return redirect(url_for("stores.index"))
+    till.role = job
+    db.session.commit()
+    flash(f"{till.name} {JOB_TEXT[job]}.", "success")
+    return redirect(url_for("stores.index"))
+
+
 @stores_bp.route("/counters/new", methods=["POST"])
 @login_required
 @role_required("admin", "manager")
