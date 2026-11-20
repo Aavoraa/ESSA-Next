@@ -10,23 +10,38 @@
 <div class="pos-screen" id="posScreen">
 
   <aside class="pos-side">
-    {# ONE scanner for everything. The first scan is a garment; the scan after
-       it is the staff ID of whoever sold that garment, and it lands on that line.
+    {# ONE box for everything. The first scan is a garment; the scan after it
+       is the staff ID of whoever sold that garment, and it lands on that line.
        A bill can carry garments sold by different people, so it is asked per
-       line rather than once for the sale. #}
+       line rather than once for the sale.
+
+       The customer is found from the same box: a membership card, a mobile
+       number or a previous bill number that is not a product or a staff ID
+       attaches that customer instead. The customer stays optional — a walk-in
+       is billed without one, and a new customer needs only a name. #}
     <div class="card p-2">
       <div class="input-group">
         <span class="input-group-text"><i class="bi bi-upc-scan"></i></span>
         <input id="scanBox" class="form-control" autocomplete="off" autofocus
-               placeholder="Scan product, then staff ID">
+               placeholder="Product, staff or customer"
+               title="Scan a product, then the staff ID — or a customer's mobile, bill # or card"
+               aria-label="Scan a product or staff ID, or find a customer by mobile, bill number or card">
         <button id="camBtn" class="btn btn-outline-primary" type="button" title="Scan with the camera">
           <i class="bi bi-camera"></i></button>
+        <button class="btn btn-outline-primary" type="button" title="New customer" aria-label="New customer"
+                data-bs-toggle="modal" data-bs-target="#newCustModal"><i class="bi bi-person-plus"></i></button>
       </div>
       <div id="scanHint" class="scan-hint mt-1">Scan a product tag.</div>
       <div id="camBox" style="display:none" class="mt-1">
         <div id="camReader" style="width:100%"></div>
         <button id="camStop" class="btn btn-outline-secondary btn-sm mt-1">Stop camera</button>
       </div>
+      <div id="custCard" class="d-none mt-1 small d-flex justify-content-between align-items-center">
+        <span class="text-truncate"><b id="custName">-</b> <span class="text-muted" id="custPhone"></span>
+          <span class="badge text-bg-info" id="custPoints">0 pts</span></span>
+        <button id="custClear" class="btn btn-xs btn-outline-danger" title="Remove customer"><i class="bi bi-x"></i></button>
+      </div>
+      <div id="custWalkin" class="small text-muted mt-1"><i class="bi bi-person"></i> Walk-in customer</div>
     </div>
 
     {# Which entity is billing, from where, at which till — and the number the
@@ -57,23 +72,6 @@
       </div>
     </div>
 
-    {# The customer is optional — a walk-in is billed without one, and a new
-       customer needs only a name. The phone number is never required. #}
-    <div class="card p-2">
-      <div class="input-group input-group-sm">
-        <input id="custLookup" class="form-control" placeholder="Customer: mobile / bill # / card (optional)">
-        <button id="custLookupBtn" class="btn btn-outline-primary" type="button" title="Search"><i class="bi bi-search"></i></button>
-        <button class="btn btn-outline-primary" type="button" title="New customer"
-                data-bs-toggle="modal" data-bs-target="#newCustModal"><i class="bi bi-person-plus"></i></button>
-      </div>
-      <div id="custCard" class="d-none mt-1 small d-flex justify-content-between align-items-center">
-        <span class="text-truncate"><b id="custName">-</b> <span class="text-muted" id="custPhone"></span>
-          <span class="badge text-bg-info" id="custPoints">0 pts</span></span>
-        <button id="custClear" class="btn btn-xs btn-outline-danger" title="Remove customer"><i class="bi bi-x"></i></button>
-      </div>
-      <div id="custWalkin" class="small text-muted mt-1"><i class="bi bi-person"></i> Walk-in customer</div>
-    </div>
-
     {# What the discount card's P.Code applied, and a return's store credit waiting
        for this bill — shown only when there is something to say. Discounts are
        given in the discount card (D + Enter) and the bill's % / AddIn % columns. #}
@@ -100,6 +98,16 @@
       </div>
     </div>
 
+    {# Keyboard first: every action on this screen has a key, and this says which.
+       The mouse still works; it is never needed. #}
+    <div class="keys" id="keyLegend" aria-label="Keyboard shortcuts">
+      <span><kbd>F2</kbd> Scan</span><span><kbd>F3</kbd> Key in item</span>
+      <span><kbd>↓</kbd> Edit lines</span><span><kbd>F4</kbd> New customer</span>
+      <span><kbd>F7</kbd> Discount</span><span><kbd>F8</kbd> Previous bill</span>
+      <span><kbd>F9</kbd> Scheme</span><span><kbd>F10</kbd> Bill</span>
+      <span><kbd>Alt+Del</kbd> Clear</span><span><kbd>Esc</kbd> Back to scan</span>
+    </div>
+
     <div class="mt-auto card p-2 pos-go">
       <div class="d-flex justify-content-between align-items-baseline">
         <span class="text-muted small">TOTAL</span>
@@ -118,7 +126,7 @@
       {% else %}
       <button id="goSettle" class="btn btn-brand w-100 mt-1" disabled
               title="{{ 'Saves the bill and prints the delivery copy; payment is taken at a Payment till' if till_job == 'billing' else 'Saves the bill, prints the delivery copy, then opens Settlement' }}">
-        <i class="bi bi-printer"></i> Bill &amp; print delivery copy</button>
+        <i class="bi bi-printer"></i> Bill &amp; print delivery copy <kbd class="kb-on">F10</kbd></button>
       {% if till_job == 'billing' %}<div class="small text-muted mt-1">
         <i class="bi bi-info-circle"></i> Billing till — the customer pays at a Payment till.</div>{% endif %}
       {% endif %}
@@ -290,7 +298,7 @@
   .pos-screen { display:grid; grid-template-columns: 290px minmax(0,1fr); gap:12px; height: calc(100vh - 150px); }
   @media (max-width: 1399px) { .pos-screen { grid-template-columns: 280px minmax(0,1fr); } }
   .pos-side .btn-sm, .pos-side .btn-xs { white-space:nowrap; }
-  .pos-side #scanBox::placeholder, .pos-side #custLookup::placeholder { font-size:.82rem; }
+  .pos-side #scanBox::placeholder { font-size:.82rem; }
   .pos-side { display:flex; flex-direction:column; gap:10px; min-height:0; overflow:hidden; }
   .pos-side .card { margin:0; padding:10px !important; box-shadow:none; }
   .pos-side .input-group-text { background:var(--panel-2, #F7F9F7); color:var(--muted, #68756E); }
@@ -334,6 +342,15 @@
   .bill-sums b { color:var(--text, #17221D); }
   .bill-grand { font-size:1.9rem; color:var(--brand-dark); }
   #promoBox { max-height:84px; overflow:auto; }
+  /* the keyboard legend */
+  .keys { display:flex; flex-wrap:wrap; gap:3px 10px; font-size:.72rem; color:var(--text-muted, #68756E); padding:0 2px; }
+  .keys span { white-space:nowrap; }
+  .keys kbd, .kb-on { font:600 .66rem/1 ui-monospace, SFMono-Regular, Menlo, monospace; padding:2px 4px; border-radius:3px;
+    background:transparent; color:inherit; border:1px solid currentColor; box-shadow:none; opacity:.85; }
+  .kb-on { margin-left:4px; }
+  /* where the keyboard is, always visible */
+  .bill-table tbody .form-control:focus, .bill-table tbody .form-select:focus { outline:2px solid var(--accent, #2F8F68); outline-offset:0; }
+  .bill-table tbody tr:focus-within td { background:#EEF7F2; }
   @media (max-width: 991px) {
     .pos-screen { grid-template-columns: 1fr; height:auto; }
     .bill-lines { max-height: 50vh; }
@@ -431,8 +448,26 @@ function lineMath(l){
 
 
 
+// Removing a box that has the cursor makes the browser commit it (blur →
+// change), and committing redraws the bill — from inside the redraw that was
+// removing it. One redraw at a time; one asked for meanwhile runs straight after.
+let rendering = false, renderAgain = false;
 function renderBill(){
+  if (rendering){ renderAgain = true; return; }
+  rendering = true;
+  try { renderBillNow(); } finally { rendering = false; }
+  if (renderAgain){ renderAgain = false; renderBill(); }
+}
+function renderBillNow(){
   const body = $('billBody');
+  // The bill is redrawn whole, and a promotion check redraws it again 250 ms
+  // after any change. Whoever is keying a line must not lose their place, or
+  // what they had half-typed, to that: remember the box and put them back in it.
+  const ae = document.activeElement;
+  const keep = ae && body.contains(ae) && ae.dataset.key
+    ? {cls: LINE_FIELDS.find((c) => ae.classList.contains(c)), key: ae.dataset.key,
+       value: ae.value, dirty: ae.dataset.dirty === '1'}
+    : null;
   // `subtotal` is the goods as charged (after every line's discounts); `gross`
   // before them. The bill-wide discount the server takes is no longer used —
   // every discount is a line's own, so GST is always on what was charged.
@@ -535,8 +570,29 @@ function renderBill(){
     const l = lineOf(b.dataset.key); if (!l) return;
     l.staff = null; awaitingKey = l.key; changed(); focusScan();
   });
+  // Typed but not yet committed: the box remembers, so a redraw can carry it.
+  body.querySelectorAll('input[data-key]').forEach((el) => {
+    el.addEventListener('input', () => { el.dataset.dirty = '1'; });
+    el.addEventListener('change', () => { delete el.dataset.dirty; });
+  });
+  if (keep && keep.cls){
+    const el = body.querySelector(`.${keep.cls}[data-key="${keep.key}"]`);
+    if (el){
+      el.focus({preventScroll: true});
+      if (keep.dirty && el.tagName === 'INPUT'){
+        // Put the half-typed figure back and make sure it still commits on
+        // Enter / Tab / arrow, as it would have before the redraw.
+        el.value = keep.value; el.dataset.dirty = '1';
+        el.addEventListener('blur', () => {
+          if (el.dataset.dirty === '1') el.dispatchEvent(new Event('change'));
+        }, {once: true});
+      }
+    }
+  }
   paintGo();
 }
+//: The boxes on a bill line, left to right — what the keyboard walks.
+const LINE_FIELDS = ['qty-input', 'addin-input', 'pct-input', 'staff-pick'];
 
 function lineOf(key){ return lines.find((l) => l.key === key); }
 function stockLeft(pid){
@@ -633,18 +689,31 @@ async function handleScan(code){
     // ?code= rather than a path segment: a warehouse QR can carry '/' and '|'.
     const r = await fetch(`${SHOP_ROOT}/pos/api/product?code=${encodeURIComponent(code)}${customer ? '&customer_id=' + customer.id : ''}`);
     if (r.ok){ addProduct(await r.json()); return; }
-    say(`No product or staff ID for “${code}”.`, 'bad');
+    // Not a garment and not a staff ID: the same box also finds the customer,
+    // by membership card, mobile number or a previous bill number.
+    if (await lookupCustomer(code)) return;
+    say(`No product, staff ID or customer for “${code}”.`, 'bad');
   } catch (err){ say('Lookup failed: ' + err, 'bad'); }
 }
 
 const scanBox = $('scanBox');
 let scanTimer = null, lastAuto = null;
-scanBox.addEventListener('input', () => {
+// When the box last changed, and the slowest gap between changes since it was
+// empty. A scanner types a whole code in a burst; a person keying a mobile
+// number pauses between digits. Only a burst is taken without Enter, so a
+// number being typed by hand is never snatched half-way through.
+let lastInputAt = 0, slowestGap = 0;
+scanBox.addEventListener('input', (e) => {
+  const now = performance.now();
+  if (scanBox.value.length <= 1) slowestGap = 0;
+  else if (e.inputType !== 'insertFromPaste') slowestGap = Math.max(slowestGap, now - lastInputAt);
+  lastInputAt = now;
   // Most scanners send no Enter: when a scan settles, take it.
   clearTimeout(scanTimer);
   scanTimer = setTimeout(() => {
     const code = scanBox.value.trim();
     if (!code || code === lastAuto) return;
+    if (slowestGap > 60) return;          // typed by hand — wait for Enter
     const isWarehouseQr = /^EU?1\|/.test(code);
     if (isWarehouseQr || (code.length >= 4 && !/\s/.test(code))){ lastAuto = code; handleScan(code); }
   }, 150);
@@ -654,7 +723,7 @@ scanBox.addEventListener('keydown', (e) => {
   e.preventDefault(); clearTimeout(scanTimer);
   handleScan(scanBox.value);
 });
-function resetScan(){ scanBox.value = ''; lastAuto = null; scanBox.focus(); }
+function resetScan(){ scanBox.value = ''; lastAuto = null; slowestGap = 0; scanBox.focus(); }
 
 // ---- the entry row: keyed in, left to right ----------------------------------------
 // Every box is typable. Barcode → Enter, or a name in Product, finds the item.
@@ -934,8 +1003,10 @@ function openDiscountCard(){
   dcSay(lines.length ? '' : 'The bill is empty — scan the items first.', !lines.length);
   paintDiscountCard();
   discModal.show();
-  setTimeout(() => $('dcDisc').focus(), 250);
 }
+// Once the card has finished opening — a timer raced the fade and lost, leaving
+// the cursor on the dialog itself rather than in the discount box.
+$('discModal').addEventListener('shown.bs.modal', () => { $('dcDisc').focus(); $('dcDisc').select(); });
 function paintDiscountCard(){
   $('dcBody').innerHTML = lines.length ? lines.map((l) => {
     const m = lineMath(l);
@@ -1148,14 +1219,20 @@ async function repriceForCustomer(){
     if (n){ changed(); say(j.price_list ? `${n} line(s) priced on the ${j.price_list} list.` : `${n} line(s) back to the ordinary price.`, 'ok'); }
   } catch (err){ /* the ordinary prices stand */ }
 }
+// Called from the one scan box once the code is neither a product nor a staff
+// ID. `strict` keeps the lookup to a card, a whole mobile number or an exact
+// bill number — never a name or the last few digits of a phone — so an unknown
+// barcode cannot quietly attach some customer to the bill.
 async function lookupCustomer(q){
-  q = (q || '').trim(); if (!q) return;
-  const j = await (await fetch(`${SHOP_ROOT}/floor/api/customer-lookup?q=${encodeURIComponent(q)}`)).json();
-  if (j.error){ alert(j.error); return; }
-  paintCustomer(j); $('custLookup').value = '';
+  q = (q || '').trim(); if (!q) return false;
+  const r = await fetch(`${SHOP_ROOT}/floor/api/customer-lookup?strict=1&q=${encodeURIComponent(q)}`);
+  if (!r.ok) return false;
+  const j = await r.json();
+  if (j.error) return false;
+  paintCustomer(j);
+  say(`Customer: ${j.name}${j.phone ? ' · ' + j.phone : ''}`);
+  return true;
 }
-$('custLookupBtn').onclick = () => lookupCustomer($('custLookup').value);
-$('custLookup').addEventListener('keydown', (e) => { if (e.key === 'Enter'){ e.preventDefault(); lookupCustomer(e.target.value); } });
 $('custClear').onclick = () => paintCustomer(null);
 $('ncSave').onclick = async () => {
   const name = $('ncName').value.trim();
@@ -1204,7 +1281,19 @@ $('prevBtn').addEventListener('show.bs.dropdown', async () => {
         </span>
       </li>`).join('') : '<li class="dropdown-item-text small text-muted">No bills on this till yet.</li>';
   } catch (err){ menu.innerHTML = `<li class="dropdown-item-text small text-danger">${esc(err)}</li>`; }
+  // Into the list, so ↑ ↓ pick a bill and Enter prints it.
+  const first = menu.querySelector('a');
+  if (first && menu.classList.contains('show')) first.focus();
 });
+$('prevMenu').addEventListener('keydown', (e) => {
+  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+  // Down / up between bills (the print link); → / Tab reaches the download.
+  const rows = [...$('prevMenu').querySelectorAll('li')].filter((li) => li.querySelector('a'));
+  const at = rows.findIndex((li) => li.contains(document.activeElement));
+  const next = rows[(at + (e.key === 'ArrowDown' ? 1 : rows.length - 1) + rows.length) % rows.length];
+  if (next){ e.preventDefault(); e.stopPropagation(); next.querySelector('a').focus(); }
+}, true);
+$('prevBtn').addEventListener('hidden.bs.dropdown', () => setTimeout(focusScan, 0));
 
 // ---- on to settlement ----------------------------------------------------------------
 function paintGo(){
@@ -1268,6 +1357,110 @@ function paintExchange(){
   if (creditNote) el.innerHTML = `<i class="bi bi-arrow-left-right"></i> Exchange: <b>${esc(creditNote.number)}</b>
     — ${fmt(creditNote.balance)} store credit is applied at settlement.`;
 }
+
+// ---- keyboard first ------------------------------------------------------------------
+// A bill is raised without touching the mouse. Every action has a key (the
+// legend under the buttons lists them), every dialog opens with the cursor in
+// its first box and hands it back to the scanner when it closes, and the lines
+// already on the bill are walked with the arrows.
+//
+// F-keys rather than letters, because the scanner and the entry row are
+// always being typed into: a letter shortcut would land in the box instead.
+// F1 (help), F5 (reload), F6 (address bar), F11 and F12 are left to the browser.
+function goBill(){
+  const btn = $('goSettle');
+  if (btn.classList.contains('d-none')){ say('This is a Payment till — it raises no bills.', 'bad'); return; }
+  if (btn.disabled){
+    say(lines.length ? ($('goWarn').innerText || 'The bill is not ready.') : 'The bill is empty — scan a product first.', 'bad');
+    focusScan(); return;
+  }
+  btn.click();
+}
+function showModal(id){ bootstrap.Modal.getOrCreateInstance($(id)).show(); }
+const SHORTCUTS = {
+  F2: () => { scanBox.focus(); scanBox.select(); },
+  F3: () => { $('enBarcode').focus(); $('enBarcode').select(); },
+  F4: () => showModal('newCustModal'),
+  F7: () => openDiscountCard(),
+  F8: () => { $('prevBtn').focus(); bootstrap.Dropdown.getOrCreateInstance($('prevBtn')).show(); },
+  F9: () => $('offersBtn').click(),
+  F10: goBill,
+  ClearBill: () => $('clearBill').click(),
+};
+document.addEventListener('keydown', (e) => {
+  let k = e.key;
+  if (k === 'Enter' && (e.ctrlKey || e.metaKey)) k = 'F10';
+  else if (k === 'Delete' && e.altKey) k = 'ClearBill';
+  else if (e.ctrlKey || e.altKey || e.metaKey) return;
+  const fn = SHORTCUTS[k];
+  if (!fn) return;
+  e.preventDefault();
+  // A dialog that is open has the keyboard; Esc closes it first.
+  if (document.querySelector('.modal.show')) return;
+  fn();
+}, true);
+
+// The scanner: ↓ / ↑ with nothing typed steps into the last line on the bill.
+scanBox.addEventListener('keydown', (e) => {
+  if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !scanBox.value && lines.length){
+    e.preventDefault(); focusLine(lines.length - 1, 'qty-input');
+  } else if (e.key === 'Escape' && scanBox.value){ e.preventDefault(); resetScan(); }
+});
+
+// The entry row: Esc empties it and goes back to the scanner.
+['enBarcode', ...enFields].forEach((id) => $(id).addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (id === 'enProduct' && suggest.length) return;      // first Esc closes the list
+  e.preventDefault(); clearEntry(); focusScan();
+}, true));   // capture: runs before the name box's own Esc empties the list
+
+// The lines on the bill. ↑ ↓ move to the same box on the line above / below,
+// Enter keeps the figure and goes back to the scanner, Esc likewise, and
+// Ctrl+Delete takes the line off the bill. Tab still walks left to right.
+function focusLine(i, cls){
+  const l = lines[Math.max(0, Math.min(lines.length - 1, i))];
+  if (!l) return focusScan();
+  const el = $('billBody').querySelector(`.${cls}[data-key="${l.key}"]`)
+          || $('billBody').querySelector(`.qty-input[data-key="${l.key}"]`);
+  if (el){ el.focus(); if (el.select) el.select(); el.closest('tr').scrollIntoView({block: 'nearest'}); }
+}
+$('billBody').addEventListener('keydown', (e) => {
+  const el = e.target;
+  const cls = LINE_FIELDS.find((c) => el.classList && el.classList.contains(c));
+  if (!cls) return;
+  const i = lines.findIndex((l) => l.key === el.dataset.key);
+  const isSelect = el.tagName === 'SELECT';
+  if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !isSelect){
+    // A number box would step its value on ↑ ↓; here they move between lines.
+    e.preventDefault();
+    const to = i + (e.key === 'ArrowDown' ? 1 : -1);
+    el.blur();                                    // commits the figure (may redraw)
+    if (to < 0) return focusScan();
+    focusLine(to, cls);
+  } else if (e.key === 'Enter' && !isSelect){
+    e.preventDefault(); el.blur(); focusScan();
+  } else if (e.key === 'Escape'){
+    e.preventDefault(); el.blur(); focusScan();
+  } else if (e.key === 'Delete' && (e.ctrlKey || e.metaKey)){
+    e.preventDefault();
+    removeLine(el.dataset.key);
+    lines.length ? focusLine(Math.min(i, lines.length - 1), cls) : focusScan();
+  }
+});
+
+// Dialogs: the cursor starts in the first box, Enter does the main thing, and
+// closing hands the keyboard back to the scanner.
+$('newCustModal').addEventListener('shown.bs.modal', () => $('ncName').focus());
+['ncName', 'ncPhone', 'ncEmail', 'ncState'].forEach((id) => $(id).addEventListener('keydown', (e) => {
+  if (e.key === 'Enter'){ e.preventDefault(); $('ncSave').click(); }
+}));
+$('placeModal').addEventListener('shown.bs.modal', () => $('pmCompany').focus());
+['pmCompany', 'pmLocation', 'pmFloor', 'pmCounter'].forEach((id) => $(id).addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)){ e.preventDefault(); $('pmSelect').click(); }
+}));
+$('offersModal').addEventListener('shown.bs.modal', () => $('offersModal').querySelector('.btn-close').focus());
+['newCustModal', 'placeModal', 'offersModal'].forEach((id) =>
+  $(id).addEventListener('hidden.bs.modal', () => setTimeout(focusScan, 0)));
 
 // Opening the screen is a new bill on this counter — a refresh included; nothing
 // from the last load is kept. The one exception is an exchange: a return hands
