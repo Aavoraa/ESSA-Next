@@ -65,6 +65,11 @@ def customer_lookup():
     q = (request.args.get("q") or "").strip()
     if not q:
         return jsonify({"error": "Enter a phone or invoice number"}), 400
+    # strict=1: the billing counter's single scan box sends here whatever was
+    # not a product or a staff ID, which includes unknown barcodes. There only
+    # a card, a whole mobile number or an exact bill number may match — not a
+    # name, and not the last five digits of somebody's phone.
+    strict = request.args.get("strict") == "1"
 
     c = None
     # 0) membership-card barcode, e.g. "CUST000042"
@@ -77,7 +82,7 @@ def customer_lookup():
         c = Customer.query.filter_by(phone=q).first()
     # 2) digits-only match — normalizes "+91 99000 11111" vs "9900011111"
     digits = "".join(ch for ch in q if ch.isdigit())
-    if not c and len(digits) >= 5:
+    if not c and len(digits) >= (10 if strict else 5):
         # The same test, narrowed in the database first on PostgreSQL: a phone
         # whose ASCII digits end in `digits` — or any phone holding a non-ASCII
         # character, whose digits only Python's isdigit() can read — then the
@@ -100,7 +105,7 @@ def customer_lookup():
         if inv and inv.customer_id:
             c = inv.customer
     # 4) name (last resort)
-    if not c:
+    if not c and not strict:
         c = Customer.query.filter(Customer.name.ilike(f"%{q}%")).first()
 
     if not c:

@@ -18,6 +18,12 @@
         <button class="btn btn-brand" type="submit">Open</button>
       </div>
     </form>
+    {# Keyboard first, as at the counter: the money is taken without the mouse. #}
+    <div class="keys" aria-label="Keyboard shortcuts">
+      <span><kbd>F2</kbd> Bill no.</span><span><kbd>Alt+↑↓</kbd> Waiting bills</span>
+      <span><kbd>Enter</kbd> on an empty amount: the rest</span>
+      <span><kbd>F10</kbd> Settle</span><span><kbd>F9</kbd> New bill</span>
+    </div>
     <div class="card pend">
       <div class="px-3 py-2 border-bottom d-flex justify-content-between align-items-center">
         <span class="fw-bold"><i class="bi bi-hourglass-split"></i> Waiting for payment</span>
@@ -158,7 +164,7 @@
 
     <div class="px-3 py-2 border-top d-flex justify-content-between align-items-center gap-2">
       <span class="small text-muted"><i class="bi bi-printer"></i> Settling prints the customer copy.</span>
-      <button id="billBtn" class="btn btn-brand btn-lg" disabled><i class="bi bi-check-circle"></i> Settle &amp; print</button>
+      <button id="billBtn" class="btn btn-brand btn-lg" disabled><i class="bi bi-check-circle"></i> Settle &amp; print <kbd class="kb-on">F10</kbd></button>
     </div>
     {% endif %}
   </section>
@@ -198,6 +204,13 @@
     .pos-screen { grid-template-columns: 1fr; height:auto; }
     .readouts, .tenders { grid-template-columns: 1fr 1fr; }
   }
+  /* the keyboard legend, as at the counter */
+  .keys { display:flex; flex-wrap:wrap; gap:3px 10px; font-size:.72rem; color:var(--text-muted, #68756E); padding:0 4px; flex:0 0 auto; }
+  .keys span { white-space:nowrap; }
+  .keys kbd, .kb-on { font:600 .66rem/1 ui-monospace, SFMono-Regular, Menlo, monospace; padding:2px 4px; border-radius:3px;
+    background:transparent; color:inherit; border:1px solid currentColor; box-shadow:none; opacity:.85; }
+  .kb-on { margin-left:4px; }
+  .pend-list .list-group-item:focus { outline:2px solid var(--accent, #2F8F68); outline-offset:-2px; }
 </style>
 {% endblock %}
 {% block scripts %}
@@ -230,6 +243,40 @@ function fitScreen(){
 window.addEventListener('resize', fitScreen);
 fitScreen();
 
+// ---- keyboard first --------------------------------------------------------
+// F2 the bill box, Alt+↑ / Alt+↓ the waiting bill above / below, F9 a new bill
+// at the counter, F10 (or Ctrl+Enter) settles. F-keys, because a letter would
+// land in whichever amount box has the cursor.
+const KEY_ACTIONS = {
+  F2: () => { const b = $('billScan'); b.focus(); b.select(); },
+  F9: () => { window.location = {{ url_for('pos.counter') | tojson }}; },
+  F10: () => {
+    const btn = $('billBtn');
+    if (!btn) return;
+    if (btn.disabled){ const w = $('sWarn'); if (w && !w.innerText) w.innerText = 'Enter how the bill is being paid.'; return; }
+    btn.click();
+  },
+};
+function stepBill(by){
+  const rows = [...document.querySelectorAll('.pend-list a.list-group-item')];
+  if (!rows.length) return;
+  const at = rows.findIndex((a) => a.classList.contains('active'));
+  const to = rows[Math.max(0, Math.min(rows.length - 1, (at < 0 ? (by > 0 ? -1 : rows.length) : at) + by))];
+  if (to && !to.classList.contains('active')) window.location = to.href;
+}
+document.addEventListener('keydown', (e) => {
+  if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')){
+    e.preventDefault(); stepBill(e.key === 'ArrowDown' ? 1 : -1); return;
+  }
+  let k = e.key;
+  if (k === 'Enter' && (e.ctrlKey || e.metaKey)) k = 'F10';
+  else if (e.ctrlKey || e.altKey || e.metaKey) return;
+  const fn = KEY_ACTIONS[k];
+  if (!fn) return;
+  e.preventDefault();
+  fn();
+}, true);
+
 {% if inv and not inv.is_cancelled and not settled_already %}
 const BILL_ID = {{ inv.id }};
 // The amount due: this bill, plus the customer's other bills ticked to settle
@@ -242,9 +289,9 @@ function retotal(){
   DUE = r2(THIS_DUE + extra.reduce((a, el) => a + Number(el.dataset.due), 0));
   $('rDue').innerText = fmt(DUE);
   $('rDueLabel').innerText = extra.length ? `Amount due · ${extra.length + 1} bills` : 'Amount due';
-  $('billBtn').innerHTML = extra.length
+  $('billBtn').innerHTML = (extra.length
     ? `<i class="bi bi-check-circle"></i> Settle ${extra.length + 1} bills &amp; print`
-    : '<i class="bi bi-check-circle"></i> Settle &amp; print';
+    : '<i class="bi bi-check-circle"></i> Settle &amp; print') + ' <kbd class="kb-on">F10</kbd>';
   paint();
 }
 document.querySelectorAll('.tog').forEach((el) => el.onchange = retotal);
@@ -359,6 +406,36 @@ document.querySelectorAll('.t-rest').forEach((b) => b.onclick = () => {
   $('cashIn').value = '';
   paint();
 });
+// Enter in an amount box: empty, it takes the rest of the bill (cash: exactly
+// what is left); filled, it settles if the payment adds up, or moves on to the
+// next box if something is still owed. Enter in a reference box moves to its
+// amount. So a cash bill is: Enter (exact), Enter (settle).
+const AMOUNT_BOXES = () => [$('cashIn'), ...METHODS.map(amtEl)];
+AMOUNT_BOXES().forEach((el) => el.addEventListener('keydown', (e) => {
+  // A bill QR scanned while the cursor is in an amount: letters cannot be a
+  // rupee figure, so the scan goes to the bill box, where its Enter opens it.
+  if (e.key.length === 1 && /[a-z]/i.test(e.key) && !e.ctrlKey && !e.altKey && !e.metaKey){
+    e.preventDefault();
+    const box = $('billScan'); box.value = e.key; box.focus();
+    return;
+  }
+  if (e.key !== 'Enter' || e.ctrlKey || e.metaKey) return;
+  e.preventDefault();
+  if (!el.value.trim()){
+    if (el === $('cashIn')) $('cashExact').click();
+    else document.querySelector(`.t-rest[data-method="${el.dataset.method}"]`).click();
+    el.select();
+    return;
+  }
+  paint();
+  if (!$('billBtn').disabled){ $('billBtn').click(); return; }
+  const boxes = AMOUNT_BOXES();
+  const next = boxes[(boxes.indexOf(el) + 1) % boxes.length];
+  next.focus(); next.select();
+}));
+METHODS.forEach((m) => refEl(m).addEventListener('keydown', (e) => {
+  if (e.key === 'Enter'){ e.preventDefault(); amtEl(m).focus(); amtEl(m).select(); }
+}));
 refEl('credit_note').addEventListener('change', lookupCreditNote);
 refEl('advance').addEventListener('change', lookupAdvance);
 refEl('gift_voucher').addEventListener('change', lookupGiftVoucher);
